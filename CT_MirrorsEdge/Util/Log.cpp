@@ -33,11 +33,9 @@ namespace
       fputs(sTimeStamp, pfileout);
   }
 
-  static void PrintMessage(WORD color, const char* type, const char* format, va_list args)
+  // With g_logMutex held
+  static void PrintHeld(WORD color, const char* type, const char* format, va_list args)
   {
-    // Block other threads from writing at the same time
-    std::lock_guard<std::mutex> lock(g_logMutex);
-
     PrintTimeStamp();
     std::string finalFormat = std::string(type) + format + "\n";
 
@@ -54,6 +52,13 @@ namespace
       fflush(pfileout);
     }
     va_end(argsCopy);
+  }
+
+  static void PrintMessage(WORD color, const char* type, const char* format, va_list args)
+  {
+    // Block other threads from writing at the same time
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    PrintHeld(color, type, format, args);
   }
 }
 
@@ -122,4 +127,32 @@ void log::CrashNote(const char* text)
     fputs("\n", pfileout);
     fflush(pfileout);
   }
+}
+
+void log::ExitNote(const char* text)
+{
+  // Not even the file's own lock: a thread Windows stopped mid-write still
+  // holds it, and nothing else runs any more
+  if (!pfileout)
+    return;
+  SYSTEMTIME now;
+  GetLocalTime(&now);
+  char stamp[32];
+  sprintf_s(stamp, "[%02d:%02d:%02d] ", now.wHour, now.wMinute, now.wSecond);
+  _fwrite_nolock(stamp, 1, strlen(stamp), pfileout);
+  _fwrite_nolock(text, 1, strlen(text), pfileout);
+  _fwrite_nolock("\n", 1, 1, pfileout);
+  _fflush_nolock(pfileout);
+}
+
+bool log::TryWarning(const char* format, ...)
+{
+  std::unique_lock<std::mutex> lock(g_logMutex, std::try_to_lock);
+  if (!lock.owns_lock())
+    return false;
+  va_list args;
+  va_start(args, format);
+  PrintHeld(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY, "[WARNING] ", format, args);
+  va_end(args);
+  return true;
 }

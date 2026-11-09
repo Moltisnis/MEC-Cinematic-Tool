@@ -1,7 +1,10 @@
 #include "UI.h"
 #include "Main.h"
 #include "Util/Util.h"
+#include "Util/Perf.h"
 #include "Util/ImGuiEXT.h"
+#include "Visuals/WorldImages.h"
+#include "Camera/PoseEditor.h"
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_dx11.h"
 #include <cmath>
@@ -188,6 +191,8 @@ void UI::BuildFonts()
   m_FontScale = GetResolutionScale();
   float size = roundf(g_textSizes[m_TextSize] * m_FontScale);
 
+  // Clear frees the fonts, the heading font with them
+  ImGui::SetHeadingFont(nullptr);
   io.Fonts->Clear();
 
   // Segoe UI is on every Windows since Vista and reads much better than
@@ -200,6 +205,13 @@ void UI::BuildFonts()
     strcat_s(path, "\\Fonts\\segoeui.ttf");
     if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES)
       pFont = io.Fonts->AddFontFromFileTTF(path, size, nullptr, g_glyphRanges);
+
+    // Section names (ImGui::SectionHeading): Segoe UI Bold, a size bigger.
+    // Added after the normal font, which stays the default.
+    path[length] = '\0';
+    strcat_s(path, "\\Fonts\\segoeuib.ttf");
+    if (pFont && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES)
+      ImGui::SetHeadingFont(io.Fonts->AddFontFromFileTTF(path, roundf(size * 1.2f), nullptr, g_glyphRanges));
   }
 
   if (!pFont)
@@ -376,7 +388,6 @@ void UI::DrawMiscMenu()
     g_mainHandle->OnConfigChanged();
   }
   ImGui::PopItemWidth();
-  ImGui::HelpMarker("Scales with the game's resolution too. Drag the window's bottom right corner to resize it.");
 
   int cursor = m_DrawOwnCursor ? 1 : 0;
   const char* cursorNames[] = { "Windows cursor", "Drawn by the menu" };
@@ -387,11 +398,12 @@ void UI::DrawMiscMenu()
     g_mainHandle->OnConfigChanged();
   }
   ImGui::PopItemWidth();
-  ImGui::HelpMarker("The cursor shown while this menu is open. The Windows cursor is sharper and has no "
-    "lag. If it doesn't show up on your setup, pick \"Drawn by the menu\".");
 
   if (ImGui::Button("Change hotkeys..."))
     g_mainHandle->GetInputSystem()->ShowUI();
+
+  ImGui::SubHeading("Performance");
+  perf::DrawUI();
 
   ImGui::SubHeading("Log");
   if (ImGui::Checkbox("Show the console window (from the next start)", g_mainHandle->GetShowConsoleSetting()))
@@ -415,6 +427,9 @@ void UI::Draw()
     m_HasKeyboardFocus = false;
     m_HasMouseFocus = false;
     m_PendingWheel = 0.f;
+    // The letterbox and guides stay with the menu closed (CAMERA > Letterbox and guide lines)
+    if (g_mainHandle->GetCameraManager()->WantsOverlay())
+      DrawOverlayOnly();
     return;
   }
 
@@ -471,6 +486,15 @@ void UI::Draw()
 
   ImGui_ImplDX11_NewFrame();
 
+  // Over the picture, under the menu's windows (see CameraManager::DrawOverlay);
+  // the lights' dots first, so a click on a dot isn't also the track path's
+  // The pictures' click first: while placing one by click, the click is its
+  worldimages::DrawOverlay();
+  // A held pose's bones and rings (GAME > Pose): a click on them is the pose's
+  pose_editor::DrawOverlay();
+  g_mainHandle->GetLightManager()->DrawOverlay();
+  g_mainHandle->GetCameraManager()->DrawOverlay(true);
+
   float fontSize = ImGui::GetFontSize();
   bool windowOpen = true;
   ImGui::SetNextWindowPos(ImVec2(fontSize * 2.f, fontSize * 2.f), ImGuiCond_FirstUseEver);
@@ -479,18 +503,37 @@ void UI::Draw()
   ImGui::Begin("Cinematic Tools   (F5 to show / hide)###CinematicTools", &windowOpen);
   {
     float spacing = ImGui::GetStyle().ItemSpacing.x;
-    float tabWidth = (ImGui::GetContentRegionAvailWidth() - spacing * 4.f) / 5.f;
+    float tabWidth = (ImGui::GetContentRegionAvailWidth() - spacing * 5.f) / 6.f;
     TabButton("CAMERA", UIMenu_Camera, tabWidth);
+    ImGui::SameLine();
+    TabButton("GAME", UIMenu_Game, tabWidth);
     ImGui::SameLine();
     TabButton("FOLLOW", UIMenu_Follow, tabWidth);
     ImGui::SameLine();
     TabButton("VISUALS", UIMenu_Visuals, tabWidth);
     ImGui::SameLine();
-    TabButton("LIGHTS", UIMenu_Lights, tabWidth);
+    TabButton("REPLAY", UIMenu_Replay, tabWidth);
     ImGui::SameLine();
     TabButton("MISC", UIMenu_Misc, tabWidth);
 
     g_mainHandle->GetCameraManager()->DrawStatusBar();
+    // Hooks that couldn't be made: a fix or a feature is off this game
+    std::vector<std::string> failed = util::hooks::FailedHooks();
+    if (!failed.empty())
+    {
+      std::string names;
+      bool lightMaps = false;
+      for (std::string const& name : failed)
+      {
+        names += (names.empty() ? "" : ", ") + name;
+        lightMaps |= name == "LightMapId";
+      }
+      ImGui::PushTextWrapPos(0.f);
+      ImGui::TextColored(ImVec4(1.f, 0.35f, 0.3f, 1.f), "%d of the tools' hooks couldn't be made this game, so what they do "
+        "is off: %s.%s Restarting the game may help; the log has the details.", (int)failed.size(), names.c_str(),
+        lightMaps ? " LightMapId is the fix for black buildings with many districts loaded." : "");
+      ImGui::PopTextWrapPos();
+    }
     ImGui::Separator();
 
     // Only the tab's content scrolls, the tabs and status stay in place
@@ -499,10 +542,34 @@ void UI::Draw()
       g_mainHandle->GetCameraManager()->DrawUI();
     else if (m_SelectedMenu == UIMenu_Follow)
       g_mainHandle->GetCameraManager()->DrawFollowUI();
+    else if (m_SelectedMenu == UIMenu_Game)
+      g_mainHandle->GetCameraManager()->DrawGameUI();
     else if (m_SelectedMenu == UIMenu_Visuals)
+    {
+      // The lights under the effects, each manager with its own lock (and
+      // the lights' widgets with their own IDs)
       g_mainHandle->GetVisualsManager()->DrawUI();
-    else if (m_SelectedMenu == UIMenu_Lights)
-      g_mainHandle->GetLightManager()->DrawUI();
+      // Opened when a light's dot was clicked on the picture
+      if (g_mainHandle->GetLightManager()->TakeOpenRequest())
+        ImGui::SetNextTreeNodeOpen(true);
+      if (ImGui::CollapsingHeader("Lights###Lights"))
+      {
+        ImGui::PushID("Lights");
+        g_mainHandle->GetLightManager()->DrawUI();
+        ImGui::PopID();
+      }
+      // Pictures standing in the world (opened when a picture's dot was clicked)
+      if (worldimages::TakeOpenRequest())
+        ImGui::SetNextTreeNodeOpen(true);
+      if (ImGui::CollapsingHeader("Images###WorldImages"))
+      {
+        ImGui::PushID("WorldImages");
+        worldimages::DrawUI();
+        ImGui::PopID();
+      }
+    }
+    else if (m_SelectedMenu == UIMenu_Replay)
+      g_mainHandle->GetCameraManager()->DrawReplayUI();
     else if (m_SelectedMenu == UIMenu_Misc)
       DrawMiscMenu();
     ImGui::EndChild();
@@ -521,6 +588,37 @@ void UI::Draw()
   // The window's close button
   if (!windowOpen)
     SetEnabled(false);
+}
+
+// With the menu closed: an ImGui frame with only what goes over the picture,
+// no windows of the menu, no mouse, and the cursor left alone
+void UI::DrawOverlayOnly()
+{
+  ComPtr<ID3D11Texture2D> pBackBuffer;
+  ComPtr<ID3D11RenderTargetView> pRTV;
+  if (FAILED(g_dxgiSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)pBackBuffer.GetAddressOf())) || !pBackBuffer)
+    return;
+  if (FAILED(g_d3d11Device->CreateRenderTargetView(pBackBuffer.Get(), NULL, pRTV.GetAddressOf())))
+    return;
+  ComPtr<ID3D11RenderTargetView> pOldRTV;
+  ComPtr<ID3D11DepthStencilView> pOldDSV;
+  g_d3d11Context->OMGetRenderTargets(1, pOldRTV.GetAddressOf(), pOldDSV.GetAddressOf());
+  g_d3d11Context->OMSetRenderTargets(1, pRTV.GetAddressOf(), nullptr);
+
+  ImGuiIO& io = ImGui::GetIO();
+  io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+  for (int i = 0; i < 5; ++i)
+    io.MouseDown[i] = false;
+  io.MouseWheel = 0.f;
+  ImGuiConfigFlags flags = io.ConfigFlags;
+  io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+  ImGui_ImplDX11_NewFrame();
+  g_mainHandle->GetCameraManager()->DrawOverlay(false);
+  ImGui::Render();
+  ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+  io.ConfigFlags = flags;
+
+  g_d3d11Context->OMSetRenderTargets(1, pOldRTV.GetAddressOf(), pOldDSV.Get());
 }
 
 void UI::Update(double dt)

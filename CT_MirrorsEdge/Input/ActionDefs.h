@@ -35,6 +35,35 @@ enum Action
 
   Camera_Attach,
 
+  // The free camera's bookmarks (hotkeys only, their menu list is commented
+  // out in CameraManager::DrawCameraMovesUI): the digit goes to
+  // one, Shift and the digit saves it. Kept in order: see CameraManager::HotkeyUpdate.
+  Camera_GoToBookmark1,
+  Camera_GoToBookmark2,
+  Camera_GoToBookmark3,
+  Camera_GoToBookmark4,
+  Camera_GoToBookmark5,
+  Camera_GoToBookmark6,
+  Camera_GoToBookmark7,
+  Camera_GoToBookmark8,
+  Camera_GoToBookmark9,
+  Camera_SaveBookmark1,
+  Camera_SaveBookmark2,
+  Camera_SaveBookmark3,
+  Camera_SaveBookmark4,
+  Camera_SaveBookmark5,
+  Camera_SaveBookmark6,
+  Camera_SaveBookmark7,
+  Camera_SaveBookmark8,
+  Camera_SaveBookmark9,
+
+  // The camera track's keyframes: undo / redo a change (see TrackPlayer::Undo).
+  // Backspace and Shift + Backspace: Ctrl + Z / Ctrl + Y (the first builds
+  // with them, 2026-10-25) moved the camera down too, Left Ctrl being Move
+  // down; their config names changed with that, so a saved Ctrl + Z isn't read.
+  Track_Undo,
+  Track_Redo,
+
   ActionCount
 };
 
@@ -121,7 +150,27 @@ static const std::map<Action, std::string> ActionStringMap =
   { Track_CreateNode, "Track_CreateNode" },
   { Track_DeleteNode, "Track_DeleteNode" },
   { Track_Play, "Track_Play" },
-  { Camera_Attach, "Camera_Attach" }
+  { Camera_Attach, "Camera_Attach" },
+  { Camera_GoToBookmark1, "Camera_GoToBookmark1" },
+  { Camera_GoToBookmark2, "Camera_GoToBookmark2" },
+  { Camera_GoToBookmark3, "Camera_GoToBookmark3" },
+  { Camera_GoToBookmark4, "Camera_GoToBookmark4" },
+  { Camera_GoToBookmark5, "Camera_GoToBookmark5" },
+  { Camera_GoToBookmark6, "Camera_GoToBookmark6" },
+  { Camera_GoToBookmark7, "Camera_GoToBookmark7" },
+  { Camera_GoToBookmark8, "Camera_GoToBookmark8" },
+  { Camera_GoToBookmark9, "Camera_GoToBookmark9" },
+  { Camera_SaveBookmark1, "Camera_SaveBookmark1" },
+  { Camera_SaveBookmark2, "Camera_SaveBookmark2" },
+  { Camera_SaveBookmark3, "Camera_SaveBookmark3" },
+  { Camera_SaveBookmark4, "Camera_SaveBookmark4" },
+  { Camera_SaveBookmark5, "Camera_SaveBookmark5" },
+  { Camera_SaveBookmark6, "Camera_SaveBookmark6" },
+  { Camera_SaveBookmark7, "Camera_SaveBookmark7" },
+  { Camera_SaveBookmark8, "Camera_SaveBookmark8" },
+  { Camera_SaveBookmark9, "Camera_SaveBookmark9" },
+  { Track_Undo, "Track_UndoKeyframe" },
+  { Track_Redo, "Track_RedoKeyframe" }
 };
 
 
@@ -149,7 +198,27 @@ static const std::map<Action, std::string> ActionUIStringMap =
   { Track_CreateNode, "Add keyframe" },
   { Track_DeleteNode, "Delete last keyframe" },
   { Track_Play, "Play / stop track" },
-  { Camera_Attach, "Attach to what the camera looks at" }
+  { Camera_Attach, "Attach to what the camera looks at" },
+  { Camera_GoToBookmark1, "Go to camera bookmark 1" },
+  { Camera_GoToBookmark2, "Go to camera bookmark 2" },
+  { Camera_GoToBookmark3, "Go to camera bookmark 3" },
+  { Camera_GoToBookmark4, "Go to camera bookmark 4" },
+  { Camera_GoToBookmark5, "Go to camera bookmark 5" },
+  { Camera_GoToBookmark6, "Go to camera bookmark 6" },
+  { Camera_GoToBookmark7, "Go to camera bookmark 7" },
+  { Camera_GoToBookmark8, "Go to camera bookmark 8" },
+  { Camera_GoToBookmark9, "Go to camera bookmark 9" },
+  { Camera_SaveBookmark1, "Save camera bookmark 1" },
+  { Camera_SaveBookmark2, "Save camera bookmark 2" },
+  { Camera_SaveBookmark3, "Save camera bookmark 3" },
+  { Camera_SaveBookmark4, "Save camera bookmark 4" },
+  { Camera_SaveBookmark5, "Save camera bookmark 5" },
+  { Camera_SaveBookmark6, "Save camera bookmark 6" },
+  { Camera_SaveBookmark7, "Save camera bookmark 7" },
+  { Camera_SaveBookmark8, "Save camera bookmark 8" },
+  { Camera_SaveBookmark9, "Save camera bookmark 9" },
+  { Track_Undo, "Undo a keyframe change" },
+  { Track_Redo, "Redo a keyframe change" }
 };
 
 
@@ -180,7 +249,27 @@ static const std::map<Action, int> DefaultKeyboardMap =
   { Track_CreateNode, VK_ADD },
   { Track_DeleteNode, VK_SUBTRACT },
   { Track_Play, VK_MULTIPLY },
-  { Camera_Attach, VK_NUMPAD5 }
+  { Camera_Attach, VK_NUMPAD5 },
+  { Camera_GoToBookmark1, '1' },
+  { Camera_GoToBookmark2, '2' },
+  { Camera_GoToBookmark3, '3' },
+  { Camera_GoToBookmark4, '4' },
+  { Camera_GoToBookmark5, '5' },
+  { Camera_GoToBookmark6, '6' },
+  { Camera_GoToBookmark7, '7' },
+  { Camera_GoToBookmark8, '8' },
+  { Camera_GoToBookmark9, '9' },
+  { Camera_SaveBookmark1, (VK_SHIFT << 8) | '1' },
+  { Camera_SaveBookmark2, (VK_SHIFT << 8) | '2' },
+  { Camera_SaveBookmark3, (VK_SHIFT << 8) | '3' },
+  { Camera_SaveBookmark4, (VK_SHIFT << 8) | '4' },
+  { Camera_SaveBookmark5, (VK_SHIFT << 8) | '5' },
+  { Camera_SaveBookmark6, (VK_SHIFT << 8) | '6' },
+  { Camera_SaveBookmark7, (VK_SHIFT << 8) | '7' },
+  { Camera_SaveBookmark8, (VK_SHIFT << 8) | '8' },
+  { Camera_SaveBookmark9, (VK_SHIFT << 8) | '9' },
+  { Track_Undo, VK_BACK },
+  { Track_Redo, (VK_SHIFT << 8) | VK_BACK }
 };
 
 static const std::map<Action, GamepadKey> DefaultGamepadMap =
@@ -207,5 +296,25 @@ static const std::map<Action, GamepadKey> DefaultGamepadMap =
   { Track_CreateNode, GamepadKey::None },
   { Track_DeleteNode, GamepadKey::None },
   { Track_Play, GamepadKey::None },
-  { Camera_Attach, GamepadKey::None }
+  { Camera_Attach, GamepadKey::None },
+  { Camera_GoToBookmark1, GamepadKey::None },
+  { Camera_GoToBookmark2, GamepadKey::None },
+  { Camera_GoToBookmark3, GamepadKey::None },
+  { Camera_GoToBookmark4, GamepadKey::None },
+  { Camera_GoToBookmark5, GamepadKey::None },
+  { Camera_GoToBookmark6, GamepadKey::None },
+  { Camera_GoToBookmark7, GamepadKey::None },
+  { Camera_GoToBookmark8, GamepadKey::None },
+  { Camera_GoToBookmark9, GamepadKey::None },
+  { Camera_SaveBookmark1, GamepadKey::None },
+  { Camera_SaveBookmark2, GamepadKey::None },
+  { Camera_SaveBookmark3, GamepadKey::None },
+  { Camera_SaveBookmark4, GamepadKey::None },
+  { Camera_SaveBookmark5, GamepadKey::None },
+  { Camera_SaveBookmark6, GamepadKey::None },
+  { Camera_SaveBookmark7, GamepadKey::None },
+  { Camera_SaveBookmark8, GamepadKey::None },
+  { Camera_SaveBookmark9, GamepadKey::None },
+  { Track_Undo, GamepadKey::None },
+  { Track_Redo, GamepadKey::None }
 };

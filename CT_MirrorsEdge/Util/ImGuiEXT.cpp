@@ -264,3 +264,31 @@ void ImGui::SubHeading(const char* text)
   Dummy(ImVec2(0, GetStyle().ItemSpacing.y * 0.5f));
   TextColored(GetStyleColorVec4(ImGuiCol_SliderGrabActive), "%s", text);
 }
+
+// The bigger, bold font for section names (UI::BuildFonts); null: the normal one
+static ImFont* s_headingFont = nullptr;
+
+void ImGui::SetHeadingFont(ImFont* font)
+{
+  s_headingFont = font;
+}
+
+void ImGui::SectionHeading(const char* text)
+{
+  // Room above (none at the top of the window), the name in the bigger bold
+  // font, and a line in the heading color under it across the whole width.
+  // Nothing to click.
+  if (GetCursorPos().y > GetCursorStartPos().y)
+    Dummy(ImVec2(0, GetFontSize() * 0.9f));
+  float width = GetContentRegionAvailWidth();
+  if (s_headingFont)
+    PushFont(s_headingFont);
+  TextUnformatted(text);
+  if (s_headingFont)
+    PopFont();
+  float thickness = ImMax(1.f, ImFloor(GetFontSize() / 8.f + 0.5f));
+  ImVec2 start(GetItemRectMin().x, GetItemRectMax().y + 2.f);
+  GetWindowDrawList()->AddRectFilled(start, ImVec2(start.x + width, start.y + thickness),
+    GetColorU32(ImGuiCol_SliderGrabActive));
+  Dummy(ImVec2(0, thickness + 2.f));
+}

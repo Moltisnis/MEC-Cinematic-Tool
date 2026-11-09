@@ -2,6 +2,7 @@
 #include <Windows.h>
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
 
 using namespace DirectX;
 
@@ -29,9 +30,28 @@ namespace
   const int MaxAgentsPerSwarm      = 8192;
   const int MaxComponents          = 32;
 
+  // A swarm's CrowdVariationComponent lists the appearance items its members
+  // are drawn with (CrowdAppearanceItemData, an asset): begin / end at +0xA8 /
+  // +0xB0, 0x10 bytes each, the item first.
+  const int VariationItemsBeginOffset = 0xA8;
+  const int VariationItemsEndOffset   = 0xB0;
+  const int VariationItemSize         = 0x10;
+  const int MaxVariationItems         = 64;
+
+  // A static model's data (StaticModelEntityData, or a subclass like
+  // PamStaticModelEntityData) is at entity + 0x30, its Mesh (a MeshAsset) at
+  // data + 0x98, and an asset's Name at + 0x10. Its mesh's box, local, is at
+  // entity + 0x100 / + 0x110 (two float4 corners).
+  const int StaticModelDataOffset = 0x30;
+  const int StaticModelMeshOffset = 0x98;
+  const int AssetNameOffset       = 0x10;
+  const int StaticModelBoxOffset  = 0x100;
+  const float MaxBoxSize          = 2000.f;
+
   const float PickAngle    = 0.21f;  // about 12 degrees from the middle of the view
   const float PickRadius   = 1.f;    // or this close to the line of sight, for objects near the camera
   const float PickDistance = 1000.f;
+  const float FarPickDistance = 5000.f; // trains and aircraft (an airplane flies 1.5 km up)
 
   // GameComponentEntity's transform function (vtable + 0xC0, the one Faith's
   // soldier has too): the matrix after the component array at entity + 0x38.
@@ -56,7 +76,13 @@ namespace
   };
   EntityClass g_Classes[attach::MaxClasses];
   int g_ClassCount = 0;
-  __int64 g_BoidsClassInfo = 0; // CrowdBoidsComponent, found in the first swarm
+  __int64 g_BoidsClassInfo = 0;     // CrowdBoidsComponent, found in the first swarm
+  __int64 g_VariationClassInfo = 0; // CrowdVariationComponent, likewise
+  __int64 g_ItemClassInfo = 0;      // CrowdAppearanceItemData
+  __int64 g_StaticDataClassInfo = 0; // StaticModelEntityData, found in the first static model
+  __int64 g_PamStaticDataClassInfo = 0; // PamStaticModelEntityData, found in the first one asked about
+  // PamStaticModelEntityData.PrimaryInRVLayer (the game's reflected field: + 0xE4 of the class's 0xF0 bytes)
+  const int PrimaryInRvLayerOffset = 0xE4;
 
   // The class an object's getType() returns (vtable slot 0 is "lea rax,
   // [ClassInfo]; ret"), read from its code instead of calling it. 0 if slot 0
@@ -228,9 +254,10 @@ namespace
     return previous && *(__int64*)previous == link && (!next || *(__int64*)(next + 8) == link);
   }
 
-  // A swarm's CrowdBoidsComponent, from the swarm's components (at +0x10 of
-  // each 0x20-byte entry of entity + 0x38; the count is byte +9)
-  __int64 FindBoidsComponent(__int64 pSwarm)
+  // One of a swarm's components, from the swarm's components (at +0x10 of
+  // each 0x20-byte entry of entity + 0x38; the count is byte +9). Its class is
+  // found by name the first time, then kept in classInfoFound.
+  __int64 FindComponent(__int64 pSwarm, __int64& classInfoFound, const char* className)
   {
     __int64 pComponents = *(__int64*)(pSwarm + EntityComponentsOffset);
     if (!pComponents)
@@ -244,13 +271,176 @@ namespace
       __int64 classInfo = ClassInfoOfVTable(*(__int64*)pComponent);
       if (!classInfo)
         continue;
-      if (g_BoidsClassInfo ? classInfo == g_BoidsClassInfo : ClassNameIs(classInfo, "CrowdBoidsComponent"))
+      if (classInfoFound ? classInfo == classInfoFound : ClassNameIs(classInfo, className))
       {
-        g_BoidsClassInfo = classInfo;
+        classInfoFound = classInfo;
         return pComponent;
       }
     }
     return 0;
+  }
+
+  __int64 FindBoidsComponent(__int64 pSwarm)
+  {
+    return FindComponent(pSwarm, g_BoidsClassInfo, "CrowdBoidsComponent");
+  }
+
+  // An asset's name (Asset.Name), if it looks like a path: letters, digits
+  // and _ / - . only
+  bool ReadAssetName(__int64 asset, char* buffer, size_t size)
+  {
+    buffer[0] = 0;
+    const char* name = *(const char**)(asset + AssetNameOffset);
+    if (!name)
+      return false;
+    size_t i = 0;
+    for (; i + 1 < size && name[i]; ++i)
+    {
+      char c = name[i];
+      if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+        c == '_' || c == '/' || c == '-' || c == '.'))
+      {
+        buffer[0] = 0;
+        return false;
+      }
+      buffer[i] = c;
+    }
+    buffer[i] = 0;
+    return i > 0;
+  }
+
+  void ToLower(char* text)
+  {
+    for (; *text; ++text)
+      if (*text >= 'A' && *text <= 'Z')
+        *text += 'a' - 'A';
+  }
+
+  // StaticModelEntityData or one of its subclasses
+  bool IsStaticModelData(__int64 data)
+  {
+    __int64 classInfo = ClassInfoOfVTable(*(__int64*)data);
+    for (int i = 0; classInfo && i < 4; ++i)
+    {
+      if (g_StaticDataClassInfo ? classInfo == g_StaticDataClassInfo : ClassNameIs(classInfo, "StaticModelEntityData"))
+      {
+        g_StaticDataClassInfo = classInfo;
+        return true;
+      }
+      classInfo = *(__int64*)(classInfo + ClassSuperOffset);
+    }
+    return false;
+  }
+
+  // A static model's data, box, mesh name and what that name says it is.
+  // False if it's left out: the facade shutters (louvers), which move a few
+  // centimetres and are part of a building's front like the rest of it.
+  bool DescribeStaticModel(__int64 pEntity, attach::Target& candidate)
+  {
+    __int64 data = *(__int64*)(pEntity + StaticModelDataOffset);
+    if (!data || !IsStaticModelData(data))
+      return true; // still a model, just not a named one
+    candidate.Data = data;
+
+    const float* box = (const float*)(pEntity + StaticModelBoxOffset);
+    if (IsFiniteVector(box, 8) && box[0] <= box[4] && box[1] <= box[5] && box[2] <= box[6] &&
+      box[4] - box[0] < MaxBoxSize && box[5] - box[1] < MaxBoxSize && box[6] - box[2] < MaxBoxSize)
+    {
+      candidate.HasBox = true;
+      candidate.BoxMin = XMFLOAT3(box[0], box[1], box[2]);
+      candidate.BoxMax = XMFLOAT3(box[4], box[5], box[6]);
+    }
+
+    __int64 mesh = *(__int64*)(data + StaticModelMeshOffset);
+    char name[160];
+    if (!mesh || !ReadAssetName(mesh, name, sizeof(name)))
+      return true;
+
+    // The file name without "_Mesh", for the list
+    const char* file = strrchr(name, '/');
+    strncpy_s(candidate.Label, file ? file + 1 : name, _TRUNCATE);
+    size_t length = strlen(candidate.Label);
+    if (length > 5 && _stricmp(candidate.Label + length - 5, "_Mesh") == 0)
+      candidate.Label[length - 5] = 0;
+
+    // Meshes seen in the city: monorail/monorail_train_01, monorail_trainwagon_01,
+    // monorailtrain_01/monorailtrain_01a and b (not trainstation/...), backdrop/
+    // bd_airplane_01, construction/blimpcallaghan01, vtol_backdrop, missionitem/
+    // securitycamera01/securitycamera_body, elevator/..., backdrop/bd_boats/...
+    ToLower(name);
+    if (strstr(name, "/louver/"))
+      return false;
+    if (strstr(name, "monorail_train") || strstr(name, "monorailtrain"))
+      candidate.Named = attach::Named_Train;
+    else if (strstr(name, "bd_airplane"))
+      candidate.Named = attach::Named_Airplane;
+    else if (strstr(name, "blimp"))
+      candidate.Named = attach::Named_Blimp;
+    else if (strstr(name, "vtol"))
+      candidate.Named = attach::Named_Vtol;
+    else if (strstr(name, "securitycamera"))
+      candidate.Named = attach::Named_SecurityCamera;
+    else if (strstr(name, "elevator"))
+      candidate.Named = attach::Named_Lift;
+    else if (strstr(name, "bd_boat"))
+      candidate.Named = attach::Named_Boat;
+    return true;
+  }
+
+  // What a swarm's members are, from the folder of the models it draws them
+  // with ("Levels/SP/SP_MainCity/Crowds/Cars/CarBackdropSport_01"), which also
+  // goes into label. Every swarm seen had all its items in one folder.
+  // Named_None if no item could be read or the folder isn't one seen.
+  unsigned char NameSwarm(__int64 pSwarm, char* label, size_t size)
+  {
+    label[0] = 0;
+    __int64 pVariation = FindComponent(pSwarm, g_VariationClassInfo, "CrowdVariationComponent");
+    if (!pVariation)
+      return attach::Named_None;
+    __int64 begin = *(__int64*)(pVariation + VariationItemsBeginOffset);
+    __int64 end = *(__int64*)(pVariation + VariationItemsEndOffset);
+    if (!begin || end < begin || end - begin > MaxVariationItems * VariationItemSize)
+      return attach::Named_None;
+
+    for (__int64 at = begin; at + VariationItemSize <= end; at += VariationItemSize)
+    {
+      __int64 item = *(__int64*)at;
+      if (!item)
+        continue;
+      __int64 classInfo = ClassInfoOfVTable(*(__int64*)item);
+      if (!classInfo || !(g_ItemClassInfo ? classInfo == g_ItemClassInfo : ClassNameIs(classInfo, "CrowdAppearanceItemData")))
+        continue;
+      g_ItemClassInfo = classInfo;
+
+      char name[160], lower[160];
+      if (!ReadAssetName(item, name, sizeof(name)))
+        continue;
+      strcpy_s(lower, name);
+      ToLower(lower);
+      const char* crowds = strstr(lower, "/crowds/");
+      const char* folder = crowds ? crowds + 8 : nullptr;
+      const char* slash = folder ? strchr(folder, '/') : nullptr;
+      if (!slash)
+        continue;
+      size_t length = slash - folder;
+      size_t copy = length < size - 1 ? length : size - 1;
+      memcpy(label, name + (folder - lower), copy); // in the name's own case
+      label[copy] = 0;
+
+      auto isFolder = [&](const char* text) { return strlen(text) == length && strncmp(folder, text, length) == 0; };
+      if (isFolder("cars"))
+        return attach::Named_RoadTraffic;
+      if (isFolder("boats"))
+        return attach::Named_Boat;
+      if (isFolder("drones"))
+        return attach::Named_Drone;
+      // People: the folders seen in the city, or a "FullBody" model
+      if (isFolder("lowcaste") || isFolder("midcaste") || isFolder("highcaste") || isFolder("pedestrian") ||
+        isFolder("enforcer") || isFolder("construction_worker") || strstr(slash, "fullbody"))
+        return attach::Named_Crowd;
+      return attach::Named_None;
+    }
+    return attach::Named_None;
   }
 
   // Keeps the best candidates, lowest score first. A character is two
@@ -277,12 +467,12 @@ namespace
   }
 
   // How well a point is in the middle of the view. False if it isn't in it at all.
-  bool ScorePoint(attach::View const& view, float x, float y, float z, attach::Target& candidate)
+  bool ScorePoint(attach::View const& view, float x, float y, float z, float maxDistance, attach::Target& candidate)
   {
     float v[3] = { x - view.Camera.x, y - view.Camera.y, z - view.Camera.z };
     float distance = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     float along = v[0] * view.Look.x + v[1] * view.Look.y + v[2] * view.Look.z;
-    if (along < 0.3f || distance > PickDistance)
+    if (along < 0.3f || distance > maxDistance)
       return false;
     float across = sqrtf(fmaxf(0.f, distance * distance - along * along));
     float angle = atan2f(across, along);
@@ -308,15 +498,17 @@ namespace
     int OutCount;
   };
 
-  void Offer(Collector& collector, attach::Target& candidate, float aimHeight, bool isStatic)
+  // isStatic: kept apart in the view's lists, it only counts if it moves
+  void Offer(Collector& collector, attach::Target& candidate, bool isStatic)
   {
     attach::View const& view = *collector.View;
-    float x = candidate.Position.x, y = candidate.Position.y + aimHeight, z = candidate.Position.z;
+    bool anyDistance = attach::ListedAtAnyDistance(candidate);
+    float x = candidate.Position.x, y = candidate.Position.y + attach::AimHeight(candidate), z = candidate.Position.z;
     if (collector.Radius > 0)
     {
       float v[3] = { x - view.Camera.x, y - view.Camera.y, z - view.Camera.z };
       float distance = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-      if (distance > collector.Radius)
+      if (distance > collector.Radius && !anyDistance)
         return;
       if (collector.OutCount >= collector.OutMax)
       {
@@ -329,7 +521,7 @@ namespace
       candidate.Score = distance;
       collector.Out[collector.OutCount++] = candidate;
     }
-    else if (ScorePoint(view, x, y, z, candidate))
+    else if (ScorePoint(view, x, y, z, anyDistance ? FarPickDistance : PickDistance, candidate))
     {
       attach::Scan& scan = *collector.Scan;
       if (isStatic)
@@ -337,6 +529,69 @@ namespace
       else
         Insert(scan.Best, scan.BestCount, candidate);
     }
+  }
+
+  // A static model's name told once (see FarAndUnlisted): per entity, with
+  // the data and the mesh it had then, whether it's one listed at any
+  // distance. Per thread (the scans are made on more than one).
+  struct NamedOnce
+  {
+    __int64 Data, Mesh;
+    bool AnyDistance;
+  };
+  thread_local std::unordered_map<__int64, NamedOnce> t_NamedOnce;
+  const size_t MostNamedOnce = 1 << 18;
+
+  // A scan of a radius (ScanNearby): whether a static model is past the
+  // radius and so isn't listed, without its mesh's name read. Past it only a
+  // train, an airplane, a blimp or a VTOL is listed (Offer,
+  // ListedAtAnyDistance), which a model is coming from its mesh's name: told
+  // once a model (DescribeStaticModel) and remembered (t_NamedOnce), while it
+  // has the same data and mesh. Its middle, where Offer measures from, from
+  // its box as DescribeStaticModel reads it (AimHeight). Until 2026-11-02
+  // every static model in the level had its mesh's name read and searched at
+  // every scan, near or not: with the whole city loaded the wet look's (190 m,
+  // once a second) took 4.5 - 8 ms of the game thread in one frame, a hitch
+  // (the user: "Yes, fix the spikes"). What a scan lists is the same.
+  bool FarAndUnlisted(__int64 pEntity, attach::Target const& candidate, Collector const& collector)
+  {
+    __int64 data = *(__int64*)(pEntity + StaticModelDataOffset);
+    bool modelData = data && IsStaticModelData(data);
+    float aim = g_Classes[candidate.Class].AimHeight;
+    __int64 mesh = 0;
+    if (modelData)
+    {
+      const float* box = (const float*)(pEntity + StaticModelBoxOffset);
+      if (IsFiniteVector(box, 8) && box[0] <= box[4] && box[1] <= box[5] && box[2] <= box[6] &&
+        box[4] - box[0] < MaxBoxSize && box[5] - box[1] < MaxBoxSize && box[6] - box[2] < MaxBoxSize)
+        aim = (box[1] + box[5]) * 0.5f;
+      mesh = *(__int64*)(data + StaticModelMeshOffset);
+    }
+    attach::View const& view = *collector.View;
+    float v[3] = { candidate.Position.x - view.Camera.x, candidate.Position.y + aim - view.Camera.y,
+      candidate.Position.z - view.Camera.z };
+    if (sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) <= collector.Radius)
+      return false;
+    // (no model data or no mesh: DescribeStaticModel names it nothing, so
+    // it isn't listed past the radius)
+    if (!modelData || !mesh)
+      return true;
+    auto known = t_NamedOnce.find(pEntity);
+    if (known != t_NamedOnce.end() && known->second.Data == data && known->second.Mesh == mesh)
+      return !known->second.AnyDistance;
+    attach::Target named{};
+    named.Class = candidate.Class;
+    bool listed = DescribeStaticModel(pEntity, named);
+    bool anyDistance = listed && attach::ListedAtAnyDistance(named);
+    // (remembered once its name could be read; one that couldn't is told
+    // again at the next scan)
+    if (named.Label[0])
+    {
+      if (t_NamedOnce.size() >= MostNamedOnce)
+        t_NamedOnce.clear();
+      t_NamedOnce[pEntity] = { data, mesh, anyDistance };
+    }
+    return !anyDistance;
   }
 
   void ConsiderEntity(__int64 pEntity, int classIndex, Collector& collector)
@@ -373,7 +628,12 @@ namespace
       candidate.Agent = -1;
       candidate.Class = classIndex;
       candidate.Position = XMFLOAT3(x, y, z);
-      Offer(collector, candidate, entityClass.AimHeight, entityClass.Static);
+      // (a static model past a scan's radius: see FarAndUnlisted)
+      if (entityClass.Static && collector.Radius > 0 && FarAndUnlisted(pEntity, candidate, collector))
+        return;
+      if (entityClass.Static && !DescribeStaticModel(pEntity, candidate))
+        return;
+      Offer(collector, candidate, attach::OnlyWhenMoving(candidate));
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -420,6 +680,9 @@ namespace
         }
       }
       unsigned char swarmType = moving == 0 ? 0 : (stepSum / moving > 0.12f ? 1 : 2);
+      // And what they are, from the names of their models
+      char label[sizeof(attach::Target::Label)];
+      unsigned char named = NameSwarm(pSwarm, label, sizeof(label));
 
       for (int i = 0; i < count; ++i)
       {
@@ -436,8 +699,10 @@ namespace
         candidate.Agent = i;
         candidate.Class = classIndex;
         candidate.SwarmType = swarmType;
+        candidate.Named = named;
+        memcpy(candidate.Label, label, sizeof(label));
         candidate.Position = XMFLOAT3(position[0], position[1], position[2]);
-        Offer(collector, candidate, swarmType == 2 ? 1.f : 0.6f, false);
+        Offer(collector, candidate, false);
       }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -517,6 +782,9 @@ namespace
     {
       if (*(__int64*)target.Entity != target.VTable || !IsEntityLinked(target.Entity))
         return false;
+      // A static model also still has its data: not another model built where it was
+      if (target.Data && *(__int64*)(target.Entity + StaticModelDataOffset) != target.Data)
+        return false;
       return ReadComponentTransform(target.Entity, transform);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -528,6 +796,34 @@ namespace
 
 namespace attach
 {
+  // (2026-11-08: the game's data has it True for the Dash's markers only,
+  // dash_start, dash_end, the dash_arrow meshes and checkpointcircle, False
+  // for the 103 other props read; the game draws those only into its runner's
+  // vision mask, see ReplayGameDraws' Pass_Rv.) The data's class or one of its
+  // supers must be PamStaticModelEntityData for the byte to be read.
+  bool PrimaryInRvLayer(__int64 data)
+  {
+    if (!data)
+      return false;
+    __try
+    {
+      __int64 classInfo = ClassInfoOfVTable(*(__int64*)data);
+      for (int i = 0; classInfo && i < 6; ++i)
+      {
+        if (g_PamStaticDataClassInfo ? classInfo == g_PamStaticDataClassInfo : ClassNameIs(classInfo, "PamStaticModelEntityData"))
+        {
+          g_PamStaticDataClassInfo = classInfo;
+          return *(BYTE const*)(data + PrimaryInRvLayerOffset) != 0;
+        }
+        classInfo = *(__int64*)(classInfo + ClassSuperOffset);
+      }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    return false;
+  }
+
   bool FindClasses(__int64 pFaithSoldier, bool& fromFaith)
   {
     fromFaith = false;
@@ -553,6 +849,19 @@ namespace attach
 
   const char* KindOf(Target const& target)
   {
+    switch (target.Named)
+    {
+    case Named_Crowd: return "crowd";
+    case Named_RoadTraffic: return "road traffic";
+    case Named_Drone: return "drone";
+    case Named_Boat: return "boat";
+    case Named_Train: return "train";
+    case Named_Airplane: return "airplane";
+    case Named_Blimp: return "blimp";
+    case Named_Vtol: return "VTOL";
+    case Named_SecurityCamera: return "security camera";
+    case Named_Lift: return "lift";
+    }
     if (target.Agent >= 0)
       return target.SwarmType == 1 ? "traffic" : target.SwarmType == 2 ? "crowd" : "traffic or crowd";
     return Kind(target.Class);
@@ -560,16 +869,62 @@ namespace attach
 
   Group GroupOf(Target const& target)
   {
+    switch (target.Named)
+    {
+    case Named_Crowd: return Group::People;
+    case Named_RoadTraffic: return Group::Cars;
+    case Named_Drone: return Group::Drones;
+    case Named_Boat: return Group::Boats;
+    case Named_Train: return Group::Trains;
+    case Named_Airplane: case Named_Blimp: case Named_Vtol: return Group::Aircraft;
+    case Named_SecurityCamera: return Group::Cameras;
+    case Named_Lift: return Group::Other;
+    }
+    // Not known from a name: a swarm that walks is people, anything else of it isn't known
     if (target.Agent >= 0)
-      return target.SwarmType == 2 ? Group::People : Group::Traffic;
-    return strcmp(Kind(target.Class), "character") == 0 ? Group::People : Group::Other;
+      return target.SwarmType == 2 ? Group::People : Group::Other;
+    const char* kind = Kind(target.Class);
+    if (strcmp(kind, "character") == 0)
+      return Group::People;
+    if (strcmp(kind, "drone") == 0)
+      return Group::Drones;
+    return Group::Other;
   }
 
   float AimHeight(Target const& target)
   {
     if (target.Agent >= 0)
-      return target.SwarmType == 2 ? 1.f : 0.6f;
+      return target.Named == Named_Crowd || (target.Named == Named_None && target.SwarmType == 2) ? 1.f : 0.6f;
+    // A static model's middle (most stand upright: only their height counts)
+    if (target.HasBox)
+      return (target.BoxMin.y + target.BoxMax.y) * 0.5f;
     return target.Class >= 0 && target.Class < g_ClassCount ? g_Classes[target.Class].AimHeight : 0.f;
+  }
+
+  const char* LabelOf(Target const& target)
+  {
+    return target.Label[0] ? target.Label : ClassName(target.Class);
+  }
+
+  bool ListedWhenStill(Target const& target)
+  {
+    return ListedAtAnyDistance(target) || target.Named == Named_SecurityCamera;
+  }
+
+  bool ListedAtAnyDistance(Target const& target)
+  {
+    return target.Named == Named_Train || target.Named == Named_Airplane || target.Named == Named_Blimp ||
+      target.Named == Named_Vtol;
+  }
+
+  bool OnlyWhenMoving(Target const& target)
+  {
+    return IsStatic(target.Class) && !ListedWhenStill(target);
+  }
+
+  bool KeepsThroughJumps(Target const& target)
+  {
+    return target.Named == Named_Train || target.Named == Named_Airplane || target.Named == Named_Blimp;
   }
 
   void ScanView(View const& view, Scan& scan)

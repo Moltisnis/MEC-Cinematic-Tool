@@ -10,9 +10,10 @@ using namespace Microsoft::WRL;
 enum SelectedMenu
 {
   UIMenu_Camera,
+  UIMenu_Game,
   UIMenu_Follow,
-  UIMenu_Visuals,
-  UIMenu_Lights,
+  UIMenu_Visuals,    // the lights too
+  UIMenu_Replay,
   UIMenu_Misc
 };
 
@@ -26,6 +27,8 @@ public:
   bool Initialize();
 
   void Draw();
+  // Draw with the menu closed: only what goes over the picture (see CameraManager::DrawOverlay)
+  void DrawOverlayOnly();
   void Update(double dt);
 
   bool IsEnabled() { return m_Enabled; }

@@ -6,10 +6,11 @@ A rebuild of Hattiwatti's Mirror's Edge Catalyst cinematic tools on his
 - free camera (mouse, keyboard, gamepad) and **keyframed camera tracks**: position, rotation,
   field of view, motion blur and time of day, with pause, live preview and a fixed playback rate
   for frame dumping
-- play as Faith while a track plays, **follow Faith** or NPCs, traffic, drones and moving props
+- play as Faith while a track plays, **follow Faith** or NPCs, crowds, cars, drones, boats, trains,
+  aircraft, security cameras and moving props
 - **load the city around the camera**, so a far-away camera isn't surrounded by missing props
 - time freeze, HUD toggle, time of day, Fix LOD, draw and shadow distance, motion blur, visual
-  effects (color, DoF, grain, light, tonemap, vignette) and lights
+  effects (color, DoF, grain, light, tonemap, vignette, fog with a greenscreen) and lights
 
 ## Installing
 
@@ -76,14 +77,22 @@ Tracks and lights aren't saved when the game closes.
 
 - **CAMERA**: camera on / off, tracks and keyframes, time and HUD (time of day with ±10 min,
   *Stop the clock*), detail and draw distance, sun shadows, motion blur and camera speeds. *Show
-  Faith's body* shows her third-person body, hair included. The time of day controls are
+  Faith's body* shows her third-person body, hair included. *Hear from the camera* makes the game
+  hear from the free camera instead of from Faith. The time of day controls are
   disabled while MECMP is open, because MECMP syncs the time of day.
 - **FOLLOW**: *Follow Faith*, or click something in the *Nearby* list to follow it (the camera goes
   next to it), or aim at it and use *Attach to what the camera looks at*. *Turn with it*, *Tilt with
-  it too* and *Smoothing* change how the camera follows.
-- **VISUALS**: open an effect and tick *Change this effect* to override it.
+  it too* and *Smoothing* change how the camera follows. The list's groups (People, Cars, Drones,
+  Boats, Trains, Aircraft, Security cameras, Other) come from the names of the game's own models.
+  Trains and aircraft are listed wherever they are, and a security camera puts the camera at its
+  lens.
+- **VISUALS**: open an effect and tick *Change this effect* to override it. *Fog* has a
+  *Greenscreen*: everything farther from the camera than a distance turns one flat color, to key
+  out when editing.
 - **LIGHTS**: add sphere and spot lights at the camera. Use *Forget all lights* after loading
   another level or checkpoint.
+- **REPLAY** (experimental): record Faith's run, then play it back on her body (all of it, not a
+  ghost) while the camera films it again; it can start and stop with the camera track.
 - **MISC**: text size, mouse cursor, hotkeys, console window.
 
 ## Loading the world around the camera
@@ -93,15 +102,28 @@ the world around the camera* (CAMERA → *Detail and draw distance*) also loads 
 camera, ahead of it and along the selected track:
 
 - *Stream distance* loads up to 600 m all round, or 1000 m with *Only where the camera looks*.
+- What the camera looks at loads first (after what's right around Faith).
+- *Districts*: each district of the city (Anchor, The View, Rezoning, Downtown, ...) *Normal*,
+  *Always* loaded, or *Never* loaded (unloaded, except right around Faith), with the camera on or
+  off.
+- *Vistas* (the low-detail copies of the buildings far away): all on or off, or each zone on or
+  off. By default a zone's vista is hidden while its real buildings are loaded, so the two don't
+  show at once.
 - The game crashes when some of its limits run out (zones, meshes, model instances, the renderer's
   draw batches and memory). The tools watch them and hold the camera's zones back in time; the
   menu shows how full each one is.
+- In busy parts of the city what's loaded around Faith already fills the renderer's draw batch to
+  about 75 %, past the default hold-back of 70 %. *Hold back from* (up to 78 %) lets more load
+  there, with less room before a crash.
 - *Unrestricted* ignores the renderer's limits for more distance, but **the game can crash**.
 - After starting the game, quit to the main menu and continue once: the next level load gets
   more room for model instances.
 - Some safe houses may or may not load with this setting.
 
-*Fix LOD* and *Show small objects far away* help with the detail of what is loaded.
+*Fix LOD* and *Show small objects far away* help with the detail of what is loaded. *Smooth
+animations far away* (characters past 10 m move as smoothly as near ones) is on by default, and
+*Billboard quality* is at *Much sharper* (the video billboards' full-size video allowed, and their
+bigger versions from farther away).
 
 ## Credits and license
 

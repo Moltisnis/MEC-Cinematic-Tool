@@ -62,6 +62,8 @@ public:
 
   // "Insert", "Ctrl + F2" and so on, for showing the hotkeys in the UI
   std::string GetKeyName(Action action) const { return m_KeyboardKeyNames[action]; }
+  // An action's keyboard key: the virtual key, a modifier in the byte above it
+  int GetKeyboardBinding(Action action) const { return m_KeyboardBindings[action]; }
   bool IsCapturing() const { return m_CaptureState.CaptureKb || m_CaptureState.CaptureGamepad; }
 
   bool IsActionDown(Action action);

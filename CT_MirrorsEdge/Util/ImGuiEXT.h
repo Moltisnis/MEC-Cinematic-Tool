@@ -30,6 +30,11 @@ namespace ImGui
   bool MoveArrowButton(const char* str_id, ImGuiDir dir, bool enabled);
   // Small heading text inside a section
   void SubHeading(const char* text);
+  // A section's name in a tab without collapsing headers: room above, the
+  // name in a bigger bold font and a line under it across the tab
+  void SectionHeading(const char* text);
+  // The font SectionHeading uses (null: the normal one), set with the fonts
+  void SetHeadingFont(ImFont* font);
 }
 
 // UTF-8 for the degree sign, the fonts include it
