@@ -27,7 +27,10 @@
     installed v14 build's (0E24BF212533F4EA). The diagnosis and the fix were each checked by independent agents, every
     finding put to a skeptic; the review's findings (the log text, the header stores, the tests' gaps) are all fixed.
   - Build 7BC3594EA5F0 (11-10 15:23, build.ps1 at Idle, GroundLevel.cpp only; GroundProps.ctpk unchanged): **INSTALLED**
-    15:24 (game folder, dist; the game closed). **Not tested in game.**
+    15:24 (game folder, dist; the game closed).
+  - **Works in game** (11-10 16:1x, 7BC3594EA5F0): at 16:11:43 CT.log has all six shapes (the base block, the four
+    ceiling leaves, the north wedge) "changed in the game's collision (2 of its zone's bodies)", and the station's kill
+    box spares Faith. The user, at the station: "ok everything works at it should".
 - **GAME > Faith in the streets > Solid street: stand-ins for the Sky City hall's walk-through surfaces** (after the
   low ceiling entry's install below, the user, 2026-11-10: "Yes, all of them", to "Add stand-in boxes for the hall's walk-through
   surfaces?"). Data only: no source change. Details in Research_Ground_Level_2026-11-01.md section 26.
