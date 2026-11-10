@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **GAME > Faith in the streets > Solid street: stand-ins for the Sky City hall's walk-through surfaces** (after the
+  low ceiling entry's install below, the user, 2026-11-10: "Yes, all of them", to "Add stand-in boxes for the hall's walk-through
+  surfaces?"). Data only: no source change. Details in Research_Ground_Level_2026-11-01.md section 26.
+  - GroundProps.bin v14 (48BEEE9BB51A, 151,689,514 bytes; GroundProps.ctpk 20,045,552): v13's 2,839,646 boxes kept, plus
+    3,904 Street level boxes (concrete) about 1 mm behind the drawn surfaces that had had no collision since the base
+    block's cut. They are the 58-degree leaning wall (153), the 45-degree ceiling (208), the shop-front and side cards
+    (1,544), the pool rims (1,586), the exterioraddons pillars' feet (103), the two niche walls (70) and the hall's west
+    end (240: its west wall, and the landing's south-west wall, west curb, south slope and north-west pillar).
+  - The rules each box was held to: its faces behind the drawn surface (bridges across slits narrower than Faith up to
+    14.9 mm), no box face standing in air she can see or reach, no walkable floor inside a box, pieces 1 m or less (8
+    at 1.04 m). Where a box's back shows into a space she can't reach, it's 0.10 m deep, the thinnest the props data
+    takes. Accepted: some faces 5 - 7.7 mm behind at the landing's curb and north-west pillar, boxes inside that pillar's
+    floor trim seen only through a 0.06 - 5.09 mm slit, and box bottoms seen up through the pillar's floorless footprint.
+  - Four rounds of independent offline checks, every problem raised put to a second agent trying to refute it; the
+    last round found nothing to fix. Loader rules, holdsim: all pass. perfsim's 120 s walk: planning 0.198 ms a frame
+    (0.196 on v13), the flush's part 0.047 ms. The walk test: the props cache against the whole search on 515,355
+    frames, 0 differ.
+  - Build C31482BE67B7 (11-10 13:56, build.ps1 at Idle, the release cleanup at 1e12d0d plus v14; the embedded
+    GroundProps.ctpk checked against the .bin): **INSTALLED** 13:57 (game folder, dist). **Not tested in game.**
+  - Left for later: walk-throughs at the west end outside the hall (the north-west corner's glass and facade, the
+    south-west wall's outer face and end cap, the stairs' risers and treads, the slope over the stairs, the north-east
+    pillar's south face, the lintel over the north-west pillar).
+
 - **Release cleanup for 2.0.0** (the user, 2026-11-10: "Wait for the latest solid ground session to end then clean up";
   their choices: GroundProps.bin compressed, diagnostics off behind a switch, source comments and this changelog left
   as they are).
