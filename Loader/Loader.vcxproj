@@ -40,6 +40,8 @@
     <Link>
       <ModuleDefinitionFile>usp10.def</ModuleDefinitionFile>
       <AdditionalDependencies>user32.lib;$(IntDir)gdi32_forward.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- The DLL names its .pdb without the folder it was built in -->
+      <AdditionalOptions>/PDBALTPATH:usp10.pdb %(AdditionalOptions)</AdditionalOptions>
     </Link>
     <PreLinkEvent>
       <Command>lib.exe /nologo /machine:x64 /def:"$(ProjectDir)gdi32_forward.def" /out:"$(IntDir)gdi32_forward.lib"</Command>

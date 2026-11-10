@@ -266,8 +266,11 @@ namespace
         double ms = (double)(e - b) * 1000.0 / (double)dj.Frequency;
         g_Live.GpuMs[k] += ms;
         ++g_Live.GpuCount[k];
-        g_Ten.GpuMs[k] += ms;
-        ++g_Ten.GpuCount[k];
+        if (util::DiagnosticsOn())   // (CT.log's frame line only, see LogTen)
+        {
+          g_Ten.GpuMs[k] += ms;
+          ++g_Ten.GpuCount[k];
+        }
         if (g_Phase >= 0)
         {
           g_PhaseWindow[g_Phase].GpuMs[k] += ms;
@@ -319,7 +322,7 @@ long long perf::Now()
 
 void perf::AddPresentTicks(long long ticks)
 {
-  if (GetCurrentThreadId() != g_FrameThread)
+  if (!util::DiagnosticsOn() || GetCurrentThreadId() != g_FrameThread)
     return;
   g_PresentTicks += ticks;
   g_PresentMost = (std::max)(g_PresentMost, ticks);
@@ -328,6 +331,8 @@ void perf::AddPresentTicks(long long ticks)
 
 void perf::LapStart()
 {
+  if (!util::DiagnosticsOn())   // the camera hook's line only (LogLaps)
+    return;
   long long now = Ticks();
   g_LapThread = GetCurrentThreadId();
   for (int i = 0; i < g_LapParts; ++i)
@@ -351,7 +356,7 @@ void perf::LapStart()
 
 void perf::Lap(char const* part)
 {
-  if (GetCurrentThreadId() != g_LapThread)
+  if (!util::DiagnosticsOn() || GetCurrentThreadId() != g_LapThread)
     return;
   long long now = Ticks();
   AddLap(part, now - g_LapLast);
@@ -360,7 +365,7 @@ void perf::Lap(char const* part)
 
 void perf::AddLap(char const* part, long long ticks)
 {
-  if (GetCurrentThreadId() != g_LapThread)
+  if (!util::DiagnosticsOn() || GetCurrentThreadId() != g_LapThread)
     return;
   if (LapPart* p = LapFor(part))
   {
@@ -384,22 +389,26 @@ void perf::FrameStart(ID3D11Device* pDevice, ID3D11DeviceContext* pContext)
     if (ms < 1000.f)
     {
       g_Live.FrameMs.push_back(ms);
-      g_Ten.FrameMs.push_back(ms);
+      if (util::DiagnosticsOn())
+        g_Ten.FrameMs.push_back(ms);
       if (g_Phase >= 0)
         g_PhaseWindow[g_Phase].FrameMs.push_back(ms);
       road_traffic::CrowdTestFrame(ms);   // the crowd test's frames (road traffic session's)
     }
   }
   g_LastFrame = now;
-  // CT.log's frame line, every TenMs
-  if (!g_Ten.Start)
-    Begin(g_Ten);
-  else if ((now - g_Ten.Start) / TicksPerMs() >= TenMs)
+  // CT.log's frame line, every TenMs (diagnostics only)
+  if (util::DiagnosticsOn())
   {
-    LogTen((now - g_Ten.Start) / TicksPerMs() / 1000.0);
-    Begin(g_Ten);
-    g_PresentTicks = g_PresentMost = 0;
-    g_PresentCalls = 0;
+    if (!g_Ten.Start)
+      Begin(g_Ten);
+    else if ((now - g_Ten.Start) / TicksPerMs() >= TenMs)
+    {
+      LogTen((now - g_Ten.Start) / TicksPerMs() / 1000.0);
+      Begin(g_Ten);
+      g_PresentTicks = g_PresentMost = 0;
+      g_PresentCalls = 0;
+    }
   }
   // The menu's line, once a second
   if (!g_Live.Start)

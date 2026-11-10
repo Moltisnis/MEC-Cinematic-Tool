@@ -486,7 +486,8 @@ namespace
         g_FrameView = g_DepthCopyView;
         g_FrameDesc = g_DepthCopyDesc;
       }
-      Probe(pContext, g_CopiedAt >= 0);
+      if (util::DiagnosticsOn())
+        Probe(pContext, g_CopiedAt >= 0);
       g_FrameClears = g_ClearsThisFrame;
       g_FrameCopiedAt = g_CopiedAt;
       g_ClearsThisFrame = 0;
@@ -529,19 +530,22 @@ bool greenplane::TakeFrameDepth(IDXGISwapChain* pSwapChain, ID3D11Device* pDevic
     view = FrameViewLocked(out.Transform, out.Projection);
     // Diagnostic (temporary): how often the old way (the hook's last camera
     // at Present) would have had another frame's camera
-    if (g_FrameViewOk)
+    if (util::DiagnosticsOn())
     {
-      ++g_ViewFrames;
-      if (g_ViewSeq != g_FrameViewSeq)
-        ++g_ViewMovedOn;
-    }
-    ULONGLONG now = GetTickCount64();
-    if (now - g_ViewLoggedAt >= 10000 && g_ViewFrames > 0)
-    {
-      util::log::Write("Wet surfaces (diagnostic): the frame's camera taken at its depth clear in %d frames of the last 10 s; "
-        "in %d of them the game's camera had already moved on to the next frame by Present", g_ViewFrames, g_ViewMovedOn);
-      g_ViewLoggedAt = now;
-      g_ViewFrames = g_ViewMovedOn = 0;
+      if (g_FrameViewOk)
+      {
+        ++g_ViewFrames;
+        if (g_ViewSeq != g_FrameViewSeq)
+          ++g_ViewMovedOn;
+      }
+      ULONGLONG now = GetTickCount64();
+      if (now - g_ViewLoggedAt >= 10000 && g_ViewFrames > 0)
+      {
+        util::log::Write("Wet surfaces (diagnostic): the frame's camera taken at its depth clear in %d frames of the last 10 s; "
+          "in %d of them the game's camera had already moved on to the next frame by Present", g_ViewFrames, g_ViewMovedOn);
+        g_ViewLoggedAt = now;
+        g_ViewFrames = g_ViewMovedOn = 0;
+      }
     }
   }
   ComPtr<ID3D11ShaderResourceView> pDepthView;
@@ -602,7 +606,8 @@ void greenplane::SetView(__int64 pRenderView)
   {
     memcpy(g_ViewTransform, transform, sizeof(transform));
     memcpy(g_ViewProjection, projection, sizeof(projection));
-    ++g_ViewSeq;
+    if (util::DiagnosticsOn())   // diagnostics only (see TakeFrameDepth)
+      ++g_ViewSeq;
   }
 }
 
@@ -620,7 +625,8 @@ void greenplane::OnDepthClear(ID3D11DeviceContext* pContext, ID3D11DepthStencilV
   bool first = false;
   {
   std::lock_guard<std::mutex> lock(g_DepthMutex);
-  ++g_DepthClearsSeen;
+  if (util::DiagnosticsOn())   // diagnostics only (see Apply's line)
+    ++g_DepthClearsSeen;
   if (!IsSceneShaped(desc))
     return;
   // Once the game's G-buffer pass has been seen, only the depth targets it
@@ -672,7 +678,8 @@ void greenplane::OnDepthClear(ID3D11DeviceContext* pContext, ID3D11DepthStencilV
     g_FrameViewOk = g_ViewOk;
     memcpy(g_FrameViewTransform, g_ViewTransform, sizeof(g_ViewTransform));
     memcpy(g_FrameViewProjection, g_ViewProjection, sizeof(g_ViewProjection));
-    g_FrameViewSeq = g_ViewSeq;
+    if (util::DiagnosticsOn())   // diagnostics only (see TakeFrameDepth)
+      g_FrameViewSeq = g_ViewSeq;
   }
 }
 
@@ -787,27 +794,30 @@ void greenplane::Apply(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, ID3D11
   bool draw = sane && (drawPlane || s.GreenSky) && pDepthView && back.SampleDesc.Count == 1;
 
   // Diagnostic (temporary): what it saw and did, once a second
-  ULONGLONG now = GetTickCount64();
-  if (now - g_LoggedAt >= LogIntervalMs)
+  if (util::DiagnosticsOn())
   {
-    g_LoggedAt = now;
-    int seen;
+    ULONGLONG now = GetTickCount64();
+    if (now - g_LoggedAt >= LogIntervalMs)
     {
-      std::lock_guard<std::mutex> lock(g_DepthMutex);
-      seen = g_DepthClearsSeen;
-      g_DepthClearsSeen = 0;
+      g_LoggedAt = now;
+      int seen;
+      {
+        std::lock_guard<std::mutex> lock(g_DepthMutex);
+        seen = g_DepthClearsSeen;
+        g_DepthClearsSeen = 0;
+      }
+      util::log::Write("Green screen (diagnostic): %s (the plane %s%s, the whole sky %s); the scene's depth %u x %u (format %d of the "
+        "copy), its depth clears last frame %d, copied %s; %d depth clears seen in the last second; the frame %u x %u; the camera "
+        "%.2f %.2f %.2f looking %.2f %.2f %.2f; the projection [0][0] %g [1][1] %g [2][2] %g [2][3] %g [3][2] %g [3][3] %g, depth at "
+        "1 m %g, at 100 m %g, at %.0f m %g (%s), the sky taken at %g; the game's depth at the top middle %g, the middle %g, the "
+        "bottom middle %g; the plane's middle %.2f %.2f %.2f, %.2f x %.2f m, turned %.1f",
+        draw ? "drawn" : "NOT drawn", drawPlane ? "shown" : "not shown", s.KeepWorld ? " over the sky only" : "",
+        s.GreenSky ? "green" : "not", depthDesc.Width, depthDesc.Height, (int)depthDesc.Format, clears,
+        copiedAt < 0 ? "not at all" : (copiedAt == 0 ? "at Present" : "before a clear"), seen, back.Width, back.Height, camera.x,
+        camera.y, camera.z, look.x, look.y, look.z, projection[0], projection[5], projection[10], projection[11], projection[14],
+        projection[15], z1, z100, SkyDistance, zSky, reversed ? "reversed" : "not reversed", skyDepth, g_ProbeValues[0],
+        g_ProbeValues[1], g_ProbeValues[2], center.x, center.y, center.z, s.Width, s.Height, s.TurnDegrees);
     }
-    util::log::Write("Green screen (diagnostic): %s (the plane %s%s, the whole sky %s); the scene's depth %u x %u (format %d of the "
-      "copy), its depth clears last frame %d, copied %s; %d depth clears seen in the last second; the frame %u x %u; the camera "
-      "%.2f %.2f %.2f looking %.2f %.2f %.2f; the projection [0][0] %g [1][1] %g [2][2] %g [2][3] %g [3][2] %g [3][3] %g, depth at "
-      "1 m %g, at 100 m %g, at %.0f m %g (%s), the sky taken at %g; the game's depth at the top middle %g, the middle %g, the "
-      "bottom middle %g; the plane's middle %.2f %.2f %.2f, %.2f x %.2f m, turned %.1f",
-      draw ? "drawn" : "NOT drawn", drawPlane ? "shown" : "not shown", s.KeepWorld ? " over the sky only" : "",
-      s.GreenSky ? "green" : "not", depthDesc.Width, depthDesc.Height, (int)depthDesc.Format, clears,
-      copiedAt < 0 ? "not at all" : (copiedAt == 0 ? "at Present" : "before a clear"), seen, back.Width, back.Height, camera.x,
-      camera.y, camera.z, look.x, look.y, look.z, projection[0], projection[5], projection[10], projection[11], projection[14],
-      projection[15], z1, z100, SkyDistance, zSky, reversed ? "reversed" : "not reversed", skyDepth, g_ProbeValues[0],
-      g_ProbeValues[1], g_ProbeValues[2], center.x, center.y, center.z, s.Width, s.Height, s.TurnDegrees);
   }
   if (!draw)
     return;

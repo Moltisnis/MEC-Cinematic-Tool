@@ -3220,7 +3220,7 @@ namespace
           continue;
         addOne(Kind_Drone, c.Entity, animatable, slot, c.Distance);
       }
-      if (drones > 0 && !g_DronesLogged)
+      if (util::DiagnosticsOn() && drones > 0 && !g_DronesLogged)
       {
         util::log::Write("Pose: %d drones within %.0f m of the camera, %d of them with an Ant body at + 0x100%s", drones,
           DroneScanRadius, withBody, withBody ? "" : " (so drones can't be posed this way)");

@@ -626,22 +626,23 @@ namespace
     int chosen = -1;
     char seen[320] = "";
     size_t at = 0;
+    bool diagnostics = util::DiagnosticsOn();   // the slots seen and their lines
     for (int i = 0; i < 16; ++i)
     {
       if (!views[i])
         continue;
       D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
       views[i]->GetDesc(&desc);
-      if (at + 24 < sizeof(seen))
+      if (diagnostics && at + 24 < sizeof(seen))
         at += sprintf_s(seen + at, sizeof(seen) - at, " t%d format %d (%s)", i, (int)desc.Format,
           desc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D ? "2D" : "other");
       if (chosen < 0 && desc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D && IsColourFormat(desc.Format))
         chosen = i;
     }
-    if (chosen >= 0 && g_TextureLogs.fetch_add(1) < MaxTextureLogs)
+    if (diagnostics && chosen >= 0 && g_TextureLogs.fetch_add(1) < MaxTextureLogs)
       util::log::Write("Replay:   '%s' section %d: its colour texture kept from the game's draw (t%d; the pixel shader's views:%s)",
         shape.Name, (int)section, chosen, seen);
-    else if (chosen < 0 && at > 0 && g_NoColourLogs.fetch_add(1) < MaxNoColourLogs)
+    else if (diagnostics && chosen < 0 && at > 0 && g_NoColourLogs.fetch_add(1) < MaxNoColourLogs)
       util::log::Write("Replay (diagnostic):   '%s' section %d: a draw of it by the game with no sRGB colour texture (the pixel "
         "shader's views:%s); a later one may have it", shape.Name, (int)section, seen);
     ID3D11ShaderResourceView* kept = nullptr;
@@ -912,6 +913,12 @@ namespace
   {
     if (g_shutdown)
       return;
+    // (timed for the recording's cost line only: diagnostics)
+    if (!util::DiagnosticsOn())
+    {
+      LookAtTimed(pContext, count, instances, start, base, startInstance);
+      return;
+    }
     LARGE_INTEGER from, to;
     QueryPerformanceCounter(&from);
     LookAtTimed(pContext, count, instances, start, base, startInstance);
@@ -930,7 +937,7 @@ namespace
     replay_assetlog::OnDraw(pContext, count, start);
     if (replay_gamedraws::Capturing())
       CaptureSection(pContext, count, instances, start, base);
-    else
+    else if (util::DiagnosticsOn())   // (NotePastPass's line only)
     {
       int past = replay_gamedraws::PastKeptPass();
       if (past >= 0)

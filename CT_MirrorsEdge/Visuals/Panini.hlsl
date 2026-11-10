@@ -8,8 +8,9 @@
 // looked up in it. The Panini view of a direction at horizontal angle phi is
 // S sin(phi), S tan(theta) with S = (1 + d) / (d + cos(phi)) and theta its
 // angle up from the cylinder (d = 0: the normal view; d = 1: the classic
-// Panini). Panini() below goes back from a Panini view position to where it
-// is in the normal view (the same maths as Unity HDRP's PaniniProjection).
+// Panini), from the paper "Pannini: A New Projection for Rendering Wide Angle
+// Perspective Images" (Sharpless, Postle and German, 2010). Panini() below goes
+// back from a Panini view position to where it is in the normal view.
 
 cbuffer PaniniParams : register(b0)
 {
@@ -37,16 +38,16 @@ VsOut VsMain(uint id : SV_VertexID)
   return o;
 }
 
-float2 Panini(float2 viewPos, float d)
+// With k = d + 1, a Panini x is k sin(phi) / (d + cos(phi)). Squared and solved
+// for c = cos(phi): (x^2 + k^2) c^2 + 2 x^2 d c + x^2 d^2 - k^2 = 0, so
+// c = (k sqrt(x^2 + k^2 - x^2 d^2) - x^2 d) / (x^2 + k^2). The normal view's
+// tangents are then (x, y) (d + c) / (k c).
+float2 Panini(float2 p, float d)
 {
-  float viewDist = 1.0 + d;
-  float viewHypSq = viewPos.x * viewPos.x + viewDist * viewDist;
-  float isectD = viewPos.x * d;
-  float isectDiscrim = viewHypSq - isectD * isectD;
-  float cylDistMinusD = (-isectD * viewPos.x + viewDist * sqrt(isectDiscrim)) / viewHypSq;
-  float cylDist = cylDistMinusD + d;
-  float2 cylPos = viewPos * (cylDist / viewDist);
-  return cylPos / cylDistMinusD;
+  float k = d + 1.0;
+  float x2 = p.x * p.x;
+  float c = (k * sqrt(x2 + k * k - x2 * d * d) - x2 * d) / (x2 + k * k);
+  return p * ((d + c) / (k * c));
 }
 
 float4 PsMain(VsOut i) : SV_TARGET

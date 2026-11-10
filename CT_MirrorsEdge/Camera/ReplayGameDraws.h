@@ -4,6 +4,7 @@
 #include <set>
 #include <vector>
 #include "ReplayShapes.h"
+#include "../Util/Util.h"
 
 namespace replay_store { class Out; class In; struct SaveParts; struct LoadParts; }
 
@@ -43,16 +44,20 @@ namespace replay_gamedraws
     CostParts
   };
   void AddCost(int part, long long ticks);
+  // (timed only with the diagnostics on: the cost lines are theirs)
   struct CostTimer
   {
     int Part;
     LARGE_INTEGER From;
     explicit CostTimer(int part) : Part(part)
     {
-      QueryPerformanceCounter(&From);
+      if (util::DiagnosticsOn())
+        QueryPerformanceCounter(&From);
     }
     ~CostTimer()
     {
+      if (!util::DiagnosticsOn())
+        return;
       LARGE_INTEGER to;
       QueryPerformanceCounter(&to);
       AddCost(Part, to.QuadPart - From.QuadPart);

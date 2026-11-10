@@ -3,6 +3,7 @@
 #include <share.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 using namespace util;
 
@@ -54,8 +55,33 @@ namespace
     va_end(argsCopy);
   }
 
+  // While the diagnostics are off (util::DiagnosticsOn), their lines are dropped here too: every diagnostic line
+  // says "diagnostic" in its format, or, built as text first, before its first ':' (e.g. "%s: ..." with the prefix
+  // "Exit (diagnostic)")
+  // (formatOnly: the format alone, no formatting: TryWarning's callers can't wait on anything)
+  static bool IsDiagnosticLine(const char* format, va_list args, bool formatOnly = false)
+  {
+    if (util::DiagnosticsOn() || !format)
+      return false;
+    if (strstr(format, "diagnostic"))
+      return true;
+    if (formatOnly || format[0] != '%' || format[1] != 's')
+      return false;
+    char text[160];
+    va_list argsCopy;
+    va_copy(argsCopy, args);
+    vsnprintf(text, sizeof(text), format, argsCopy);
+    va_end(argsCopy);
+    text[sizeof(text) - 1] = 0;
+    if (char* colon = strchr(text, ':'))
+      *colon = 0;
+    return strstr(text, "diagnostic") != nullptr;
+  }
+
   static void PrintMessage(WORD color, const char* type, const char* format, va_list args)
   {
+    if (IsDiagnosticLine(format, args))
+      return;
     // Block other threads from writing at the same time
     std::lock_guard<std::mutex> lock(g_logMutex);
     PrintHeld(color, type, format, args);
@@ -147,11 +173,19 @@ void log::ExitNote(const char* text)
 
 bool log::TryWarning(const char* format, ...)
 {
-  std::unique_lock<std::mutex> lock(g_logMutex, std::try_to_lock);
-  if (!lock.owns_lock())
-    return false;
   va_list args;
   va_start(args, format);
+  if (IsDiagnosticLine(format, args, true))
+  {
+    va_end(args);
+    return true;
+  }
+  std::unique_lock<std::mutex> lock(g_logMutex, std::try_to_lock);
+  if (!lock.owns_lock())
+  {
+    va_end(args);
+    return false;
+  }
   PrintHeld(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY, "[WARNING] ", format, args);
   va_end(args);
   return true;

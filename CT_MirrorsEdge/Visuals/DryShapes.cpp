@@ -588,7 +588,8 @@ void dry::Update(__int64 pRenderView, __int64 pSoldier, float const* faith)
         {
           // (diagnostic: the first few members' records in the log, to find
           // which is a motorcycle; GroundMarks.h)
-          groundmarks::ProbeTraffic(k.Target.Boids, k.Target.Agent);
+          if (util::DiagnosticsOn())
+            groundmarks::ProbeTraffic(k.Target.Boids, k.Target.Agent);
           float fl = sqrtf(forward[0] * forward[0] + forward[2] * forward[2]);
           float ahead[2] = { fl > 1e-3f ? forward[0] / fl : motion[0] / along, fl > 1e-3f ? forward[2] / fl : motion[2] / along };
           float side[2] = { -ahead[1], ahead[0] };

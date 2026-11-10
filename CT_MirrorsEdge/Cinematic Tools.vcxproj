@@ -137,6 +137,8 @@
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalLibraryDirectories>$(MinHookDir)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>$(MinHookLib);%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- The DLL names its .pdb without the folder it was built in -->
+      <AdditionalOptions>/PDBALTPATH:CT_MirrorsEdge.pdb %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -179,6 +181,7 @@
     <ClCompile Include="Util\GameMessages.cpp" />
     <ClCompile Include="Util\GameState.cpp" />
     <ClCompile Include="Util\Util.cpp" />
+    <ClCompile Include="Util\PackedResource.cpp" />
     <ClCompile Include="Camera\ReplayVehicles.cpp" />
     <ClCompile Include="Lights\LightManager.cpp" />
     <ClCompile Include="Visuals\VisualsManager.cpp" />
@@ -249,6 +252,7 @@
     <ClInclude Include="Util\GameMessages.h" />
     <ClInclude Include="Util\GameState.h" />
     <ClInclude Include="Util\Util.h" />
+    <ClInclude Include="Util\PackedResource.h" />
     <ClInclude Include="Camera\ReplayVehicles.h" />
     <ClInclude Include="Lights\LightManager.h" />
     <ClInclude Include="Visuals\VisualsManager.h" />

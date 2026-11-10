@@ -934,8 +934,9 @@ void VisualsManager::CatchUpBounceLight()
             resets ? "the lighting gets the game's own reset there" : "the bounce light gets more passes", CatchUpSolveFactor,
             CatchUpMs / 1000.0);
         }
-        // How full the game's job queue gets after it, for the log
-        util::hooks::NoteTimeJump(m_JumpWindowClock, clock);
+        // How full the game's job queue gets after it, for the log (diagnostics only)
+        if (util::DiagnosticsOn())
+          util::hooks::NoteTimeJump(m_JumpWindowClock, clock);
         bool quietBefore = now - m_LastJumpTick >= ResetQuietMs;
         m_CatchUpUntil = now + CatchUpMs;
         m_JumpWindowTick = now;
@@ -1377,9 +1378,9 @@ void VisualsManager::OnVisualEnvironmentUpdate(bool beforeGameUpdate)
     CatchUpBounceLight();
     // The depth of field's test pictures: asked for in its menu, or by the
     // file "Cinematic Tools\DoF test.txt" (looked for once a second, then
-    // deleted), so they can be taken without the menu
+    // deleted; only with the diagnostics on), so they can be taken without the menu
     ULONGLONG now = GetTickCount64();
-    if (!m_DofTest.Step && now - m_DofTestFileTick >= 1000)
+    if (util::DiagnosticsOn() && !m_DofTest.Step && now - m_DofTestFileTick >= 1000)
     {
       m_DofTestFileTick = now;
       if (GetFileAttributesA("Cinematic Tools\\DoF test.txt") != INVALID_FILE_ATTRIBUTES)

@@ -343,7 +343,7 @@ void UI::OnWheelHookReady()
 
 void UI::AddWheelFromHook(float notches)
 {
-  if (!m_UsedWheelHook.exchange(true) && m_Enabled)
+  if (!m_UsedWheelHook.exchange(true) && m_Enabled && util::DiagnosticsOn())
     util::log::Write("Menu scrolling: first wheel turn seen by the hook");
   AddWheel(notches);
 }
@@ -351,7 +351,7 @@ void UI::AddWheelFromHook(float notches)
 void UI::AddWheelFromMessage(float notches)
 {
   // Logged once, so CT.log shows whether the game sends these at all
-  if (!m_SawWheelMessage.exchange(true))
+  if (!m_SawWheelMessage.exchange(true) && util::DiagnosticsOn())
     util::log::Write("The game window gets mouse wheel messages");
   // The hook already counts every wheel turn
   if (!m_WheelHookReady)
@@ -370,7 +370,7 @@ void UI::AddCharFromMessage(unsigned int character)
 void UI::AddWheelFromRawInput(float notches)
 {
   if (notches == 0.f) return;
-  if (!m_UsedRawInputWheel.exchange(true))
+  if (!m_UsedRawInputWheel.exchange(true) && util::DiagnosticsOn())
     util::log::Write("Raw input sees the mouse wheel");
   // Only without the hook and wheel messages, so one notch never scrolls twice
   if (!m_WheelHookReady && !m_SawWheelMessage)

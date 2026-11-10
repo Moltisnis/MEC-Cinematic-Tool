@@ -373,7 +373,8 @@ void ReplayModels::RecordFrame(double time, float const* faith, __int64 soldier)
           // Diagnostic (temporary): its Visible as it first moves (see
           // util::hooks::ReadStaticModelVisible)
           bool connected = false;
-          if (track.Keys.empty() && !util::hooks::ReadStaticModelVisible(track.Entity, track.VisibleFirst, connected))
+          if (util::DiagnosticsOn() && track.Keys.empty() &&
+              !util::hooks::ReadStaticModelVisible(track.Entity, track.VisibleFirst, connected))
             track.VisibleFirst = -1;
           // Its mesh, kept as it first moves if it couldn't be when it was
           // found (a less detailed level loaded then), so it can be drawn by
@@ -465,7 +466,7 @@ void ReplayModels::StopRecording()
     char visibility[160] = "";
     int visible = -1;
     bool connected = false;
-    if (util::hooks::ReadStaticModelVisible(track.Entity, visible, connected))
+    if (util::DiagnosticsOn() && util::hooks::ReadStaticModelVisible(track.Entity, visible, connected))
     {
       int at = sprintf_s(visibility, ", Visible %d at the start, %d as it first moved, %d now (%s), %d changes", track.VisibleStart,
         track.VisibleFirst, visible, connected ? "from a connection" : "its data's", (int)track.VisibleChanges.size());
@@ -813,7 +814,7 @@ void ReplayModels::ShowAndFollow()
         switchedList += (switchedList.empty() ? "" : ", ") + std::string(item);
       // What was seen of it (once a model; one that moved, is shown part of
       // the time, or had a neighbour drawn without it while it was drawn too)
-      if ((moved || item[0] || (inside && !own.empty()) || viewBefore || viewAfter) && logs++ < 60)
+      if (util::DiagnosticsOn() && (moved || item[0] || (inside && !own.empty()) || viewBefore || viewAfter) && logs++ < 60)
         util::log::Write("Replay (diagnostic):   '%s' 0x%I64X at %.1f %.1f %.1f: %d draws of it (%d where it was, %.1f - %.1f s, "
           "%d away), its neighbours drawn without it %d times (%d between; Faith within %.0f m), in the camera's view and not drawn "
           "%d times before and %d after (drawn at %d of its %d times in view between%s); %d before, %d after in all", track.Label,
@@ -852,6 +853,8 @@ void ReplayModels::StartPlaying()
     util::log::Write("Replay: playing %d moving models (%d of them there now; %d of the others drawn by the replay from the "
       "shapes it kept%s)", (int)m_Tracks.size(), live, drawn, m_ShapesOn ? "" : ", not now: the option is off");
   // Diagnostic (temporary): the single static models the game hides now
+  if (!util::DiagnosticsOn())
+    return;
   int hidden = 0;
   for (Track const& track : m_Tracks)
   {

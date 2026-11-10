@@ -410,7 +410,7 @@ namespace
   void __fastcall hLoaderUpdate(__int64 loader)
   {
     g_Loader = loader;
-    if (!g_LoaderThread)
+    if (util::DiagnosticsOn() && !g_LoaderThread)  // diagnostics only (the thread line)
       g_LoaderThread = GetCurrentThreadId();
     double at = g_SnapshotAt.exchange(-1.0);
     if (at >= 0.0)
@@ -553,7 +553,7 @@ void replay_bundles::Update(int mode, double clock, bool enabled, bool loading)
   }
   if (!g_Available)
     return;
-  if (!g_ThreadsLogged && g_LoaderThread)
+  if (util::DiagnosticsOn() && !g_ThreadsLogged && g_LoaderThread)
   {
     g_ThreadsLogged = true;
     unsigned replay = GetCurrentThreadId();

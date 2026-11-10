@@ -1,9 +1,12 @@
 #include "Util.h"
+#include "PackedResource.h"
 #include "../Main.h"
 
 #include <atomic>
 #include <codecvt>
 #include <locale>
+
+bool util::g_DiagnosticsOn = false;
 
 bool util::IsMecmpLoaded()
 {
@@ -19,6 +22,19 @@ bool util::IsMecmpLoaded()
         : "MECMP is closed: the time of day controls are back");
   }
   return s_loaded;
+}
+
+bool util::GetPackedResource(int ID, UnpackedResource& out)
+{
+  void* data = nullptr;
+  DWORD size = 0;
+  if (!GetResource(ID, data, size))
+    return false;
+  char whyNot[200] = "";
+  if (UnpackResource((BYTE const*)data, size, out, whyNot, sizeof(whyNot)))
+    return true;
+  util::log::Error("Resource %d couldn't be unpacked: %s", ID, whyNot);
+  return false;
 }
 
 // Loads resource data from the .dll file based on resource IDs in resource.h

@@ -56,6 +56,23 @@ if (-not (Test-Path $minhookLib)) {
   Set-Content $minhookPatchMarker 'libMinHook built with MAX_MEMORY_RANGE 0x70000000'
 }
 
+# 1b. Street level's props data. Resources\GroundProps.bin (made offline from the game's data) is too big for git,
+#     so the DLL embeds Resources\GroundProps.ctpk, which is committed: it's packed again here whenever
+#     GroundProps.bin is newer. A clone without GroundProps.bin builds from the committed GroundProps.ctpk.
+$propsBin = Join-Path $root 'CT_MirrorsEdge\Resources\GroundProps.bin'
+$propsPacked = Join-Path $root 'CT_MirrorsEdge\Resources\GroundProps.ctpk'
+if ((Test-Path $propsBin) -and (-not (Test-Path $propsPacked) -or
+    (Get-Item $propsBin).LastWriteTimeUtc -gt (Get-Item $propsPacked).LastWriteTimeUtc)) {
+  # (not Windows' python.exe stand-in in WindowsApps, which only points to the Store)
+  $python = Get-Command python, py -CommandType Application -ErrorAction SilentlyContinue |
+    Where-Object { $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
+  if (-not $python) { throw 'Resources\GroundProps.bin is newer than GroundProps.ctpk: Python 3 is needed to pack it (tools\pack_resource.py)' }
+  Write-Host 'Packing Resources\GroundProps.bin into GroundProps.ctpk (LZMS, a minute or two)'
+  & $python.Source -I (Join-Path $root 'tools\pack_resource.py') pack $propsBin $propsPacked | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw 'Packing GroundProps.bin failed, see above' }
+}
+if (-not (Test-Path $propsPacked)) { throw 'Resources\GroundProps.ctpk is missing' }
+
 # 2. The tools
 & $msbuild (Join-Path $root 'CT_MirrorsEdge\Cinematic Tools.vcxproj') /nologo /v:minimal `
   /p:Configuration=$Configuration /p:Platform=x64 `

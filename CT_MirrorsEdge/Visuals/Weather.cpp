@@ -5738,12 +5738,15 @@ void weather::DrawUI()
         "front. Reflections then sets how smooth the wet ground is: the game reflects the screen on what's smooth enough. "
         "Off: the tools' own reflection drawn over the finished frame, as before.");
       // (diagnostic, 2026-11-03: what the game's G-buffer holds where the wet
-      // ground looks wrong, see GbufferWet.h)
-      if (inGbuffer && ImGui::Button("Save the G-buffer (diagnostic)##Weather"))
-        gbufferwet::RequestDump();
-      ImGui::ItemTooltip("Saves what the game's G-buffer holds this frame, before and after the wet ground goes into it, "
-        "into Cinematic Tools\\GbufferDump (about 250 MB at 4K), for finding what looks wrong where you're looking. "
-        "Only while it rains and the wet ground is in the game's own lighting.");
+      // ground looks wrong, see GbufferWet.h; shown only with the diagnostics on)
+      if (util::DiagnosticsOn())
+      {
+        if (inGbuffer && ImGui::Button("Save the G-buffer (diagnostic)##Weather"))
+          gbufferwet::RequestDump();
+        ImGui::ItemTooltip("Saves what the game's G-buffer holds this frame, before and after the wet ground goes into it, "
+          "into Cinematic Tools\\GbufferDump (about 250 MB at 4K), for finding what looks wrong where you're looking. "
+          "Only while it rains and the wet ground is in the game's own lighting.");
+      }
     }
     wetChanged |= ImGui::SliderFloat("Wet up to##Weather", &g_Wet.FadeDistance, 30.f, 600.f, "%.0f m");
     ImGui::ItemTooltip("How far from the camera the ground looks wet (it fades out by then).");

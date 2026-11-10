@@ -400,7 +400,8 @@ namespace
       ComPtr<ID3D11Buffer> out = std::move(it->second);
       g_StagingPoolBytes -= (std::min)(g_StagingPoolBytes, (size_t)it->first);
       g_StagingPool.erase(it);
-      ++g_StagingReused;
+      if (util::DiagnosticsOn())   // (the cost line's counts)
+        ++g_StagingReused;
       return out;
     }
     D3D11_BUFFER_DESC s{};
@@ -412,7 +413,8 @@ namespace
     if (!device || FAILED(device->CreateBuffer(&s, nullptr, out.GetAddressOf())))
       return nullptr;
     width = size;
-    ++g_StagingMade;
+    if (util::DiagnosticsOn())
+      ++g_StagingMade;
     return out;
   }
 
@@ -1119,7 +1121,8 @@ namespace
     out.Capacity = capacity;
     out.Read = false;
     g_StagingBytes += d.ByteWidth;
-    g_StagedBytesNow += d.ByteWidth;
+    if (util::DiagnosticsOn())   // (the cost line's)
+      g_StagedBytesNow += d.ByteWidth;
     return true;
   }
 
@@ -1732,7 +1735,7 @@ namespace
   // The world's draw of a mesh not kept, in the log once a mesh (g_Mutex held)
   void NoteWorldNotKept(__int64 vb, char const* why, UINT instances, UINT stride)
   {
-    if (!g_VbNames || g_WorldNotKeptLogged.size() >= 120)
+    if (!util::DiagnosticsOn() || !g_VbNames || g_WorldNotKeptLogged.size() >= 120)
       return;
     auto it = g_VbNames->find(vb);
     if (it == g_VbNames->end() || !g_WorldNotKeptLogged.insert(it->second).second)
@@ -2424,7 +2427,7 @@ namespace
             recipe->Candidate = false;
             recipe->Ready = true;
             g_Recipes[key | ((long long)variants << 40)] = recipe;
-            if (g_RecipeLogs++ < MaxRecipeLogs)
+            if (util::DiagnosticsOn() && g_RecipeLogs++ < MaxRecipeLogs)
               util::log::Write("Replay: '%s' section %d: another variation of it kept as the game draws it (%u instances)",
                 recipe->Name, recipe->Section, recipe->Kept);
           }
@@ -2438,7 +2441,7 @@ namespace
         {
           recipe->Ready = true;
           int ready = ++g_Ready;
-          if (g_RecipeLogs++ < MaxRecipeLogs)
+          if (util::DiagnosticsOn() && g_RecipeLogs++ < MaxRecipeLogs)
             util::log::Write("Replay: '%s' section %d kept as the game draws it (recipe %d: %u indices, %u instances of %u float4s, "
               "its transform at row %d%s)", recipe->Name, recipe->Section, ready, recipe->IndexCount, recipe->Kept, recipe->Stride,
               recipe->WorldRows[0], recipe->WorldRows.size() > 1 ? " and more" : "");
@@ -2446,7 +2449,7 @@ namespace
         else
         {
           int attempts = ++g_Attempts[key];
-          if (g_FailLogs++ < MaxFailLogs)
+          if (util::DiagnosticsOn() && g_FailLogs++ < MaxFailLogs)
             util::log::Write("Replay: '%s' section %d: the game's draw of it couldn't be kept (%s; attempt %d of %d)", recipe->Name,
               recipe->Section, why, attempts, MaxAttempts);
           if (attempts < MaxAttempts)
@@ -2525,13 +2528,19 @@ namespace
 
   // The end of the main view's G-buffer pass while the replay plays: the
   // recorded models the game doesn't have drawn with their recipes
-  // The replay's own drawing's time (see TimingLogFrames)
+  // The replay's own drawing's time (see TimingLogFrames; for its line, diagnostics only)
   struct DrawTiming
   {
     LARGE_INTEGER Start;
-    DrawTiming() { QueryPerformanceCounter(&Start); }
+    DrawTiming()
+    {
+      if (util::DiagnosticsOn())
+        QueryPerformanceCounter(&Start);
+    }
     ~DrawTiming()
     {
+      if (!util::DiagnosticsOn())
+        return;
       LARGE_INTEGER end;
       QueryPerformanceCounter(&end);
       g_DrawTicks += end.QuadPart - Start.QuadPart;
@@ -2748,7 +2757,8 @@ namespace
     double playTime = -1.0; // the time played (the recording's)
     {
       std::lock_guard<std::mutex> lock(g_Mutex);
-      memcpy(center, g_WorldCenter, sizeof(center));
+      if (util::DiagnosticsOn())
+        memcpy(center, g_WorldCenter, sizeof(center));
       playTime = g_TrackTime;
       bool worldNow = g_WorldPlaying && g_WorldOn && !g_World.empty();
       bool tracksNow = mainPass && g_WorldPlaying && g_TracksOn && !g_Tracks.empty() && g_TrackTime >= 0.0;
@@ -3074,7 +3084,7 @@ namespace
           {
             withheld.insert(KeyOf(c.second.first->Shape, c.second.first->Section));
             static std::set<int> neverLogged;
-            if (neverLogged.size() < 60 && neverLogged.insert(d.Shape).second)
+            if (util::DiagnosticsOn() && neverLogged.size() < 60 && neverLogged.insert(d.Shape).second)
               util::log::Write("Replay: '%s': a model of it the game never drew while it recorded (none of its mesh's kept draws, in "
                 "any pass, has it within %.1f m) isn't drawn with another object's look", c.second.first->Name, sqrtf(match2));
             continue;
@@ -3090,7 +3100,7 @@ namespace
           {
             withheld.insert(KeyOf(c.second.first->Shape, c.second.first->Section));
             static std::set<std::pair<int, long long>> stillLogged;
-            if (stillLogged.size() < 60 && stillLogged.insert(key).second)
+            if (util::DiagnosticsOn() && stillLogged.size() < 60 && stillLogged.insert(key).second)
               util::log::Write("Replay: '%s' section %d (pass %d, its %d): not drawn for a model that didn't move at %.1f %.1f %.1f "
                 "(none of the part's kept draws has its own instance within %.1f m: another object's look isn't used)",
                 c.second.first->Name, c.second.first->Section, c.second.first->Pass, c.second.first->PassOrdinal + 1, d.Transform[12],
@@ -3123,7 +3133,7 @@ namespace
             // In the log once a part (2026-11-01: which of the Release gate's
             // parts the replay left out wasn't known)
             static std::set<std::pair<int, long long>> logged;
-            if (logged.size() < 60 && logged.insert(key).second)
+            if (util::DiagnosticsOn() && logged.size() < 60 && logged.insert(key).second)
               util::log::Write("Replay: '%s' section %d (pass %d, its %d): not drawn for one of its models (none of its kept looks "
                 "has an instance within %.0f m of where the model was, and they don't look alike: another object's picture isn't "
                 "used)", c.second.first->Name, c.second.first->Section, c.second.first->Pass, c.second.first->PassOrdinal + 1,
@@ -3134,7 +3144,7 @@ namespace
         // Which kept draw a model that didn't move is drawn with, within 30 m
         // of the replayed Faith (once a model's part; 2026-11-02: which look
         // the gate's panes had wasn't in the log)
-        if (d.Still && Distance2(d.Transform + 12, center) < 30.f * 30.f)
+        if (util::DiagnosticsOn() && d.Still && Distance2(d.Transform + 12, center) < 30.f * 30.f)
         {
           static std::set<std::pair<__int64, long long>> drawnLogged;
           if (drawnLogged.size() < 120 && drawnLogged.insert(std::make_pair(d.Entity, c.first)).second)
@@ -3822,7 +3832,7 @@ namespace
       }
       // The first few, in the log: what's in b1 and the members (their
       // layout isn't known from the game's code yet)
-      if (g_CrowdSampleLogs < 6)
+      if (util::DiagnosticsOn() && g_CrowdSampleLogs < 6)
       {
         ++g_CrowdSampleLogs;
         CrowdKind const& k = *g_CrowdKinds[s.Kind];
@@ -4383,7 +4393,8 @@ namespace
             if (from <= to)
             {
               DrawRecipes(g_Pass, from, to);
-              ++g_PassLogLate[g_Pass];
+              if (util::DiagnosticsOn())   // (the late-pass line's count)
+                ++g_PassLogLate[g_Pass];
             }
           }
         }
@@ -4555,19 +4566,26 @@ void replay_gamedraws::Present(IDXGISwapChain* pSwapChain, ID3D11DeviceContext* 
 {
   if (!pSwapChain || !pContext || g_shutdown || !IsImmediate(pContext))
     return;
-  LARGE_INTEGER presentStart;
-  QueryPerformanceCounter(&presentStart);
+  // (the recording's cost: timed and logged with the diagnostics on only)
+  bool costed = util::DiagnosticsOn();
+  LARGE_INTEGER presentStart{};
+  if (costed)
+    QueryPerformanceCounter(&presentStart);
   struct Timed
   {
     LARGE_INTEGER Start;
+    bool On;
     ~Timed()
     {
+      if (!On)
+        return;
       LARGE_INTEGER end;
       QueryPerformanceCounter(&end);
       g_PresentTicks += end.QuadPart - Start.QuadPart;
     }
-  } timed{ presentStart };
-  LogCost();
+  } timed{ presentStart, costed };
+  if (costed)
+    LogCost();
   ++g_Frame;
   if ((!g_CrowdProbes.empty() || !g_CrowdCopies.empty()) && g_Immediate1)
   {
@@ -4588,7 +4606,7 @@ void replay_gamedraws::Present(IDXGISwapChain* pSwapChain, ID3D11DeviceContext* 
   }
   // The frame just drawn: how many passes of each kind it had after its
   // G-buffer pass, the most seen while it records (in the log when it grows)
-  if (g_SawMain && g_Capturing.load(std::memory_order_relaxed))
+  if (util::DiagnosticsOn() && g_SawMain && g_Capturing.load(std::memory_order_relaxed))
   {
     static int most[Passes] = {};
     static int logs = 0;
@@ -4622,11 +4640,14 @@ void replay_gamedraws::Present(IDXGISwapChain* pSwapChain, ID3D11DeviceContext* 
         if (g_PassHistory[k][i] > 0 && (fewest == 0 || g_PassHistory[k][i] < fewest))
           fewest = g_PassHistory[k][i];
       g_PassFewest[k] = fewest;
+      if (!util::DiagnosticsOn())
+        continue;   // the rest is the late-pass line's
       if (g_PassCounts[k] > 0 && (g_PassLogFewest[k] == 0 || g_PassCounts[k] < g_PassLogFewest[k]))
         g_PassLogFewest[k] = g_PassCounts[k];
       g_PassLogMost[k] = (std::max)(g_PassLogMost[k], g_PassCounts[k]);
     }
   }
+  if (util::DiagnosticsOn())   // the late-pass line
   {
     ULONGLONG now = GetTickCount64();
     bool playing = g_Playing.load(std::memory_order_relaxed) || g_WorldPlaying.load(std::memory_order_relaxed);
@@ -5520,7 +5541,7 @@ void replay_gamedraws::CaptureDraw(ID3D11DeviceContext* pContext, int shape, int
   {
     // Not one the tools can draw (its world matrix in its b0, or its shader not noted): never tried again
     g_Attempts[key] = MaxAttempts;
-    if (g_FailLogs++ < MaxFailLogs)
+    if (util::DiagnosticsOn() && g_FailLogs++ < MaxFailLogs)
       util::log::Write("Replay: '%s' section %d: the game's draw of it isn't one the tools can draw again (%s)", r->Name, section,
         why);
     return;
@@ -5685,7 +5706,8 @@ void replay_gamedraws::CaptureWorld(ID3D11DeviceContext* pContext, UINT indexCou
       NoteWorldNotKept(vbAt, why, instances, r->Stride);
       // Where a "not instanced" draw's instances are (the first few)
       bool full = indexCount > 6;   // the 6-index ones are far quads; the full bodies too (2026-10-28)
-      if ((full ? g_FullDrawInputLogs < 6 : g_DrawInputLogs < 4) && strstr(why, "no instance offsets in its b0") && g_VbNames)
+      if (util::DiagnosticsOn() && (full ? g_FullDrawInputLogs < 6 : g_DrawInputLogs < 4) &&
+          strstr(why, "no instance offsets in its b0") && g_VbNames)
       {
         auto named = g_VbNames->find(vbAt);
         if (named != g_VbNames->end())
@@ -6031,7 +6053,7 @@ void replay_gamedraws::CaptureCrowd(ID3D11DeviceContext* pContext, UINT indexCou
       g_CrowdKindKeys[key] = kind;
     }
     state = true;
-    if (g_CrowdKindLogs < MaxCrowdKindLogs)
+    if (util::DiagnosticsOn() && g_CrowdKindLogs < MaxCrowdKindLogs)
     {
       ++g_CrowdKindLogs;
       // The swarm's poses (people's): the texture's size
@@ -6241,37 +6263,40 @@ int replay_gamedraws::ThinTracks(std::function<int(double clock, float const* pl
     util::log::Write("Replay: cloths: %d kept (a recorded person's), %d of Faith's and %d of nobody recorded let go (the game draws "
       "those); %.1f MB of their vertices: %s", clothKept, clothFaith, clothNobody, g_ClothBytes / 1048576.0, clothList.c_str());
   // By mesh (2026-10-28: the crowds were missing in the playback, 86 tracks
-  // kept and 2 drawn at its start; which were usable wasn't in the log)
-  std::map<std::string, int> unusable, kept;
-  for (auto const& entry : g_Tracks)
+  // kept and 2 drawn at its start; which were usable wasn't in the log; diagnostics only)
+  if (util::DiagnosticsOn())
   {
-    Track const& t = entry.second;
-    size_t slash = t.Mesh.find_last_of('/');
-    std::string name = t.Mesh.empty() ? "(not in the mesh table)" : slash == std::string::npos ? t.Mesh : t.Mesh.substr(slash + 1);
-    if (t.Faith)
-      continue;
-    if (t.Cloth && t.R)
-      ++kept[name + " (cloth)"];
-    else if (!t.R || t.Header < 0)
-      ++unusable[name + (!t.R ? " (no first sample read back)" : " (its instances' rows aren't bones the replay reads)")];
-    else
-      ++kept[name];
-  }
-  for (int list = 0; list < 2; ++list)
-  {
-    std::string line;
-    for (auto const& m : list ? unusable : kept)
+    std::map<std::string, int> unusable, kept;
+    for (auto const& entry : g_Tracks)
     {
-      std::string item = m.first + (m.second > 1 ? " x" + std::to_string(m.second) : "");
-      if (!line.empty() && line.size() + item.size() > 900)
-      {
-        util::log::Write("Replay:   tracks %s: %s", list ? "not usable" : "kept", line.c_str());
-        line.clear();
-      }
-      line += (line.empty() ? "" : ", ") + item;
+      Track const& t = entry.second;
+      size_t slash = t.Mesh.find_last_of('/');
+      std::string name = t.Mesh.empty() ? "(not in the mesh table)" : slash == std::string::npos ? t.Mesh : t.Mesh.substr(slash + 1);
+      if (t.Faith)
+        continue;
+      if (t.Cloth && t.R)
+        ++kept[name + " (cloth)"];
+      else if (!t.R || t.Header < 0)
+        ++unusable[name + (!t.R ? " (no first sample read back)" : " (its instances' rows aren't bones the replay reads)")];
+      else
+        ++kept[name];
     }
-    if (!line.empty())
-      util::log::Write("Replay:   tracks %s: %s", list ? "not usable" : "kept", line.c_str());
+    for (int list = 0; list < 2; ++list)
+    {
+      std::string line;
+      for (auto const& m : list ? unusable : kept)
+      {
+        std::string item = m.first + (m.second > 1 ? " x" + std::to_string(m.second) : "");
+        if (!line.empty() && line.size() + item.size() > 900)
+        {
+          util::log::Write("Replay:   tracks %s: %s", list ? "not usable" : "kept", line.c_str());
+          line.clear();
+        }
+        line += (line.empty() ? "" : ", ") + item;
+      }
+      if (!line.empty())
+        util::log::Write("Replay:   tracks %s: %s", list ? "not usable" : "kept", line.c_str());
+    }
   }
   for (auto it = g_Tracks.begin(); it != g_Tracks.end();)
   {

@@ -19,6 +19,7 @@
 #include "Camera/ReplayStore.h"
 #include "Util/Perf.h"
 #include "Util/GameState.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <d3d11.h>
@@ -651,11 +652,54 @@ namespace
         "that queue has done up to 0x%X; the operation: '%s'", w.Ticket, w.TicketState, w.QueueDone, w.Operation);
   }
 
+  // The hang reports (Hang_*.txt) but the newest HangReportsKept deleted, once
+  // at the start (nothing else deletes them). The other kinds are left alone
+  const int HangReportsKept = 10;
+
+  void DeleteOldHangReports()
+  {
+    struct Report
+    {
+      FILETIME Written;
+      char Name[MAX_PATH];
+    };
+    std::vector<Report> found;
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA("Cinematic Tools\\Hang_*.txt", &data);
+    if (find == INVALID_HANDLE_VALUE)
+      return;
+    do
+    {
+      // The pattern can match a short (8.3) name too: the long name checked again
+      size_t length = strlen(data.cFileName);
+      if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || length < 9 || strncmp(data.cFileName, "Hang_", 5) != 0 ||
+        strcmp(data.cFileName + length - 4, ".txt") != 0)
+        continue;
+      Report report;
+      report.Written = data.ftLastWriteTime;
+      strcpy_s(report.Name, data.cFileName);
+      found.push_back(report);
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+    if ((int)found.size() <= HangReportsKept)
+      return;
+    // The newest first
+    std::sort(found.begin(), found.end(), [](Report const& a, Report const& b)
+      { return CompareFileTime(&a.Written, &b.Written) > 0; });
+    for (size_t i = HangReportsKept; i < found.size(); ++i)
+    {
+      char path[MAX_PATH + 32];
+      sprintf_s(path, "Cinematic Tools\\%s", found[i].Name);
+      DeleteFileA(path);
+    }
+  }
+
   DWORD WINAPI HangWatch(LPVOID)
   {
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     if (ntdll)
       g_ntQueryInformationThread = (tNtQueryInformationThread)GetProcAddress(ntdll, "NtQueryInformationThread");
+    DeleteOldHangReports();
 
     int reports = 0;
     int hungFor = 0;        // seconds Windows has called the window hung (not answering for 5 s before that)
@@ -674,8 +718,8 @@ namespace
         continue;
       if (!windowThread)
         windowThread = GetWindowThreadProcessId(hwnd, NULL);
-      // Once in play too, to compare with a stuck quit's
-      if (++windowSeconds == QuitWaitInPlaySeconds)
+      // Once in play too, to compare with a stuck quit's (diagnostics only)
+      if (util::DiagnosticsOn() && ++windowSeconds == QuitWaitInPlaySeconds)
         LogQuitWait("in play, for comparison");
 
       // A stuck quit ended (2026-10-28, the user: "make the tools end the game
@@ -709,7 +753,7 @@ namespace
         }
         else
           ++stuckFor;
-        if (quitting && (quitFor == 1 || quitFor % QuitLogEverySeconds == 0))
+        if (util::DiagnosticsOn() && quitting && (quitFor == 1 || quitFor % QuitLogEverySeconds == 0))
           LogQuitWait(quitFor == 1 ? "the quit started" : "the quit goes on");
         const char* why = nullptr;
         if (stuckFor >= StuckQuitSeconds)
@@ -723,7 +767,8 @@ namespace
           util::log::Warning("Exit: the game's quit is stuck (%d s since it was asked, %d s on the server's unload ticket "
             "0x%08X, that queue done up to 0x%X, the operation '%s'; %s): the tools end the game, as its own watchdog does "
             "(exit code 42)", quitFor, stuckFor, w.Ticket, w.QueueDone, w.Operation, why);
-          util::hooks::LogLevelStreaming("Exit (diagnostic)");
+          if (util::DiagnosticsOn())
+            util::hooks::LogLevelStreaming("Exit (diagnostic)");
           ExitProcess(42);
         }
       }
@@ -735,12 +780,17 @@ namespace
         // seconds (03:37 the same day: 6 s after it took its level out)
         if (++closedFor == ExitSeconds && reports < MaxReports)
         {
-          ++reports;
-          char why[128];
-          sprintf_s(why, "the game still runs %d s after its window closed", ExitSeconds);
-          if (WriteThreadReport(why, "ExitHang", windowThread, fileName, sizeof(fileName)))
-            util::log::TryWarning("Exit: the game still runs %d s after its window closed: where each of its threads is was "
-              "written to %s", ExitSeconds, fileName + 2);
+          // The report and its line: diagnostics only (counted in MaxReports only when written, so the
+          // Hang_ report keeps its room)
+          if (util::DiagnosticsOn())
+          {
+            ++reports;
+            char why[128];
+            sprintf_s(why, "the game still runs %d s after its window closed", ExitSeconds);
+            if (WriteThreadReport(why, "ExitHang", windowThread, fileName, sizeof(fileName)))
+              util::log::TryWarning("Exit: the game still runs %d s after its window closed: where each of its threads is was "
+                "written to %s", ExitSeconds, fileName + 2);
+          }
         }
         continue;
       }
@@ -751,14 +801,18 @@ namespace
       if (closeAsked && closeAsked != closeReported && now - closeAsked >= CloseSeconds * 1000ULL && reports < MaxReports)
       {
         closeReported = closeAsked;
-        ++reports;
-        char why[128];
-        sprintf_s(why, "the game's window was asked to close %d s ago and isn't closing", CloseSeconds);
-        if (WriteThreadReport(why, "Close", windowThread, fileName, sizeof(fileName)))
-          util::log::TryWarning("Exit: the game's window was asked to close %d s ago and isn't closing: where each of its "
-            "threads is was written to %s. The window's thread is %s", CloseSeconds, fileName + 2, g_windowThreadWhere);
-        util::hooks::LogLevelStreaming("Exit (diagnostic)");
-        LogQuitWait("the window asked to close");
+        // The report and the lines: diagnostics only (counted only when written, as above)
+        if (util::DiagnosticsOn())
+        {
+          ++reports;
+          char why[128];
+          sprintf_s(why, "the game's window was asked to close %d s ago and isn't closing", CloseSeconds);
+          if (WriteThreadReport(why, "Close", windowThread, fileName, sizeof(fileName)))
+            util::log::TryWarning("Exit: the game's window was asked to close %d s ago and isn't closing: where each of its "
+              "threads is was written to %s. The window's thread is %s", CloseSeconds, fileName + 2, g_windowThreadWhere);
+          util::hooks::LogLevelStreaming("Exit (diagnostic)");
+          LogQuitWait("the window asked to close");
+        }
       }
 
       // The level gone (Faith with it) a while, no loading screen: a quit
@@ -768,15 +822,19 @@ namespace
         !util::hooks::LoadScreenShown() && !gamestate::Loading() && reports < MaxReports)
       {
         goneReported = goneSince;
-        ++reports;
-        char why[128];
-        sprintf_s(why, "the game took its level out %d s ago and is still running, no loading screen up", LevelGoneSeconds);
-        if (WriteThreadReport(why, "LevelGone", windowThread, fileName, sizeof(fileName)))
-          util::log::TryWarning("Exit: the game took its level out %d s ago and is still running (no loading screen; a quit "
-            "ends it in about 5 s): where each of its threads is was written to %s. Its level streaming:", LevelGoneSeconds,
-            fileName + 2);
-        util::hooks::LogLevelStreaming("Exit (diagnostic)");
-        LogQuitWait("the level gone");
+        // The report and the lines: diagnostics only (counted only when written, as above)
+        if (util::DiagnosticsOn())
+        {
+          ++reports;
+          char why[128];
+          sprintf_s(why, "the game took its level out %d s ago and is still running, no loading screen up", LevelGoneSeconds);
+          if (WriteThreadReport(why, "LevelGone", windowThread, fileName, sizeof(fileName)))
+            util::log::TryWarning("Exit: the game took its level out %d s ago and is still running (no loading screen; a quit "
+              "ends it in about 5 s): where each of its threads is was written to %s. Its level streaming:", LevelGoneSeconds,
+              fileName + 2);
+          util::hooks::LogLevelStreaming("Exit (diagnostic)");
+          LogQuitWait("the level gone");
+        }
       }
 
       if (!IsHungAppWindow(hwnd))
@@ -818,10 +876,12 @@ bool Main::Initialize()
 {
   CreateDirectoryA("Cinematic Tools", NULL);
 
-  // The console is off unless [General] ShowConsole = true (or the MISC tab)
+  // The console is off unless [General] ShowConsole = true (or the MISC tab). The diagnostics are off unless
+  // [Debug] Diagnostics = true: read here, before the log, the hooks and the tools' threads (util::DiagnosticsOn)
   {
     INIReader earlyConfig(g_configFile);
     m_ShowConsole = earlyConfig.GetBoolean("General", "ShowConsole", false);
+    util::g_DiagnosticsOn = earlyConfig.GetBoolean("Debug", "Diagnostics", false);
   }
   util::log::Init(m_ShowConsole);
   util::log::Write("Cinematic Tools for %s\n", g_gameName);
@@ -890,8 +950,9 @@ void Main::Run()
     std::chrono::duration<double> dt = now - lastUpdate;
     lastUpdate = now;
 
-    // How full the game's job queue gets (logged below)
-    util::hooks::SampleJobQueue();
+    // How full the game's job queue gets (logged below; diagnostics only)
+    if (util::DiagnosticsOn())
+      util::hooks::SampleJobQueue();
 
     // Whether presents still pass the tools' jump in dxgi
     dtPresentCheck += dt.count();
@@ -903,7 +964,8 @@ void Main::Run()
       util::hooks::LogPhysicsBodies();
       util::hooks::LogJobQueue();
       util::hooks::LogMissionCleanupGuard();
-      util::hooks::LogSunShadowReach();
+      if (util::DiagnosticsOn())
+        util::hooks::LogSunShadowReach();
     }
 
     // WM_ACTIVATE can be missed when the tools are injected after the
@@ -1098,6 +1160,9 @@ void Main::SaveConfig()
   file << "ShowConsole = " << (m_ShowConsole ? "true" : "false") << "\n";
   file << "TextSize = " << m_pUI->GetTextSize() << "\n";
   file << "DrawMenuCursor = " << (m_pUI->UsesWindowsCursor() ? "false" : "true") << "\n\n";
+  // Not in the menu: written back only while on, so it survives the save
+  if (util::DiagnosticsOn())
+    file << "[Debug]\nDiagnostics = true\n\n";
   file << m_pCameraManager->GetConfig();
   file << m_pInputSystem->GetConfig();
   file << worldimages::GetConfig();

@@ -1,5 +1,6 @@
 #pragma once
 #include <d3d11.h>
+#include "../Util/Util.h"
 
 // VISUALS > Weather > Wet surfaces (see WetLook.cpp): the ground made to look
 // wet, drawn over the game's finished frame at Present, under the green
@@ -98,7 +99,8 @@ namespace wetlook
   // Timing the rain's and snow's work (2026-10-26, the user: "find a way to
   // improve the performance of rain/snow (GPU/CPU improvements)"; the log's
   // "Weather (performance, diagnostic)" every 10 s while it rains or snows):
-  // a part's time (ms; any thread), ScopedTime timing its scope
+  // a part's time (ms; any thread), ScopedTime timing its scope (only with the
+  // diagnostics on, util::DiagnosticsOn)
   enum TimePart { TimeWeather, TimeRoofs, TimePipes, TimePeople, TimeSetUp, TimeDrips, TimePipesDrawn, TimeGpuPass,
     TimeGpuSnow, TimePeopleScan, TimeParts };
   void NoteTime(int part, double ms);
@@ -107,8 +109,8 @@ namespace wetlook
   {
     int Part;
     double Start;
-    explicit ScopedTime(int part) : Part(part), Start(TimeNow()) {}
-    ~ScopedTime() { NoteTime(Part, TimeNow() - Start); }
+    explicit ScopedTime(int part) : Part(part), Start(util::DiagnosticsOn() ? TimeNow() : 0.0) {}
+    ~ScopedTime() { if (util::DiagnosticsOn()) NoteTime(Part, TimeNow() - Start); }
   };
   void NoteRainRoll(float const* world, float up);
   // Game thread (dry::Update): where the drips off the ends of the slopes

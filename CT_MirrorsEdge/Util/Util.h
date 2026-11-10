@@ -498,7 +498,16 @@ namespace util
   // Looked up at most once a second, from any thread.
   bool IsMecmpLoaded();
 
+  // The tools' diagnostics (lines in CT.log and the research-only work behind them: extra hooks, GPU read-backs,
+  // dumps): off unless config.ini has [Debug] Diagnostics = true. Read once at start-up (Main::Initialize), before
+  // any hook or tools thread exists, so a plain bool is enough.
+  extern bool g_DiagnosticsOn;
+  inline bool DiagnosticsOn() { return g_DiagnosticsOn; }
+
   bool GetResource(int, void*&, DWORD&);
+  // A resource the build stored packed (Util/PackedResource.h), unpacked; logs why not
+  struct UnpackedResource;
+  bool GetPackedResource(int ID, UnpackedResource& out);
   std::string VkToString(DWORD vk);
   std::string KeyLparamToString(LPARAM lparam);
   BYTE CharToByte(char c);

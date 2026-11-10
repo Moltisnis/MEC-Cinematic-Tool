@@ -2,6 +2,7 @@
 #include "CameraCollision.h"
 #include "../Main.h"
 #include "../Util/Util.h"
+#include "../Util/PackedResource.h"
 #include "../resource.h"
 #include <Windows.h>
 #include <intrin.h>
@@ -664,7 +665,7 @@ namespace
   };
   Roads g_Roads;
 
-  // ---- The props (Resources\GroundProps.bin: "CTGP", version 2, shape count, box count, the shapes (half sizes, 3
+  // ---- The props (Resources\GroundProps.bin, stored packed as GroundProps.ctpk: "CTGP", version 2, shape count, box count, the shapes (half sizes, 3
   // floats each), the boxes (u32 shape, 12 floats: right, up, forward (unit), centre), each box's surface (a byte: its
   // low 4 bits SurfaceDecls', its high 4 its group)): every model the city's free-roam levels draw with no collision, at any height (street furniture,
   // lamps, signs, parked cars and boats, statues, storefronts, plazas, walkways, roofs, backdrop buildings, the train
@@ -767,11 +768,13 @@ namespace
 
     bool Load()
     {
-      void* data = nullptr;
-      DWORD size = 0;
-      if (!util::GetResource(IDR_GROUND_PROPS, data, size) || size < 16)
+      // Stored packed (Resources\GroundProps.ctpk, made by tools/pack_resource.py from GroundProps.bin) and unpacked
+      // here into memory of its own, freed when Load returns: everything below copies out of it
+      util::UnpackedResource raw;
+      if (!util::GetPackedResource(IDR_GROUND_PROPS, raw) || raw.Size < 16 || raw.Size > MAXDWORD)
         return false;
-      BYTE const* p = (BYTE const*)data;
+      BYTE const* p = raw.Data;
+      DWORD size = (DWORD)raw.Size;
       unsigned version = 0, shapeCount = 0, boxCount = 0;
       memcpy(&version, p + 4, 4);
       memcpy(&shapeCount, p + 8, 4);
@@ -1425,8 +1428,8 @@ namespace
       return false;
     }
     bool inside = oKillInside(entity, character);
-    // Diagnostic: Faith inside a kill volume that isn't spared, with Solid street on
-    if (inside && solid && player)
+    // Diagnostic: Faith inside a kill volume that isn't spared, with Solid street on (diagnostics only)
+    if (util::DiagnosticsOn() && inside && solid && player)
     {
       unsigned other = 0;
       __try
@@ -4863,7 +4866,7 @@ void ground::Init()
   if (!g_PropsLoaded)
   {
     g_Props = Props();
-    util::log::Warning("Street level: the props data (Resources\\GroundProps.bin) couldn't be read: no solid props");
+    util::log::Warning("Street level: the props data (Resources\\GroundProps.ctpk) couldn't be read: no solid props");
   }
   else
   {
@@ -4997,7 +5000,7 @@ void ground::Update(bool hasFaith, float const* feet)
       lent = ScanForDonor(g_WorldSeen, -1, found);
     if (lent)
     {
-      if (found.Body != g_Donor.Body || found.World != g_Donor.World)
+      if (util::DiagnosticsOn() && (found.Body != g_Donor.Body || found.World != g_Donor.World))
         util::log::Write("Street level: the ground takes the ids of body %d (record 0x%I64X, user data 0x%I64X, filter "
           "0x%X, material %u)", found.Body, found.Record, found.UserData, found.Filter, found.Material);
       g_Donor = found;
@@ -5105,8 +5108,9 @@ void ground::Update(bool hasFaith, float const* feet)
     g_PlanAllMadeSince = 0;
   g_PlanAllMade = nearMade;
   planLap(PartCompare);
+  if (util::DiagnosticsOn())
   {
-    // The timing (see TimingMs): this frame's planning, and every TimingMs the line
+    // The timing (see TimingMs): this frame's planning, and every TimingMs the line (diagnostics only)
     static long long s_planTicks = 0, s_planMost = 0;
     static unsigned s_frames = 0, s_gathers = 0, s_searches = 0;
     static ULONGLONG s_since = 0;

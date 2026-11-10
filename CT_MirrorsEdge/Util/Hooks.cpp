@@ -79,9 +79,10 @@ namespace
       g_mainHandle->OnPresent(pSwapchain);
 
     // (how long the Present itself takes: MISC > Performance's frame line)
-    long long presentStart = perf::Now();
+    long long presentStart = util::DiagnosticsOn() ? perf::Now() : 0;
     HRESULT result = original(pSwapchain, SyncInterval, Flags);
-    perf::AddPresentTicks(perf::Now() - presentStart);
+    if (util::DiagnosticsOn())   // CT.log's frame line only
+      perf::AddPresentTicks(perf::Now() - presentStart);
     t_InPresent = false;
     return result;
   }
@@ -139,9 +140,10 @@ __int64 __fastcall hGamePresent(__int64 pRenderer, __int64 pScreen, __int64 r8, 
   if (!g_shutdown)
     g_mainHandle->OnPresent(pSwapchain);
   // (how long the Present itself takes, see PresentThroughTools)
-  long long presentStart = perf::Now();
+  long long presentStart = util::DiagnosticsOn() ? perf::Now() : 0;
   __int64 result = oGamePresent(pRenderer, pScreen, r8, r9);
-  perf::AddPresentTicks(perf::Now() - presentStart);
+  if (util::DiagnosticsOn())   // CT.log's frame line only
+    perf::AddPresentTicks(perf::Now() - presentStart);
   t_InPresent = false;
   return result;
 }
@@ -182,9 +184,9 @@ __int64 __fastcall hCameraUpdate(__int64 pRenderView, __int64 a2, __int64 a3, __
   if (!g_shutdown)
   {
     lensHidden = g_mainHandle->GetCameraManager()->IsCameraEnabled();
-    // (every 10 s while some were left out: how many)
+    // (every 10 s while some were left out: how many; diagnostics only)
     ULONGLONG now = GetTickCount64();
-    if (now - g_LensLoggedAt >= 10000)
+    if (util::DiagnosticsOn() && now - g_LensLoggedAt >= 10000)
     {
       unsigned leftOut = g_LensLeftOut.exchange(0, std::memory_order_relaxed);
       if (leftOut)
@@ -197,9 +199,10 @@ __int64 __fastcall hCameraUpdate(__int64 pRenderView, __int64 a2, __int64 a3, __
     // (the camera hook's parts, see perf::LapStart: the lights' its own, it's
     // updated for every render view)
     static const char* const s_lightsLap = "the lights (every render view)";
-    long long lightsStart = perf::Now();
+    long long lightsStart = util::DiagnosticsOn() ? perf::Now() : 0;
     g_mainHandle->GetLightManager()->OnGameUpdate();
-    perf::AddLap(s_lightsLap, perf::Now() - lightsStart);
+    if (util::DiagnosticsOn())   // CT.log's camera hook line only
+      perf::AddLap(s_lightsLap, perf::Now() - lightsStart);
     // GAME > Pose: the main view for the bones' dots, after the free camera is written (as the lights' dots)
     pose_editor::OnViewWritten();
   }
@@ -800,18 +803,24 @@ tSoundEntityDtor oSoundEntityDtor = nullptr;
 __int64 __fastcall hSoundEntityCtor(__int64 pEntity, __int64 a2, __int64 pData, __int64 a4)
 {
   __int64 result = oSoundEntityCtor(pEntity, a2, pData, a4);
-  LockSoundLog();
-  AddSoundLogEntity(pEntity);
-  UnlockSoundLog();
+  if (util::DiagnosticsOn())   // the sound log's table only
+  {
+    LockSoundLog();
+    AddSoundLogEntity(pEntity);
+    UnlockSoundLog();
+  }
   NoteSpotSound(pEntity, pData);
   return result;
 }
 
 __int64 __fastcall hSoundEntityDtor(__int64 pEntity, __int64 a2)
 {
-  LockSoundLog();
-  RemoveSoundLogEntity(pEntity);
-  UnlockSoundLog();
+  if (util::DiagnosticsOn())   // the sound log's table only
+  {
+    LockSoundLog();
+    RemoveSoundLogEntity(pEntity);
+    UnlockSoundLog();
+  }
   ForgetSpotSound(pEntity);
   return oSoundEntityDtor(pEntity, a2);
 }
@@ -1154,7 +1163,8 @@ __int64 __fastcall hRopeCtor(__int64 pEntity, __int64 a2, __int64 pData, __int64
   if (r < MaxWorldRopes)
   {
     g_WorldRopes[r] = pEntity;
-    ResetWorldRopeStats(r);
+    if (util::DiagnosticsOn())   // the world log's stats only
+      ResetWorldRopeStats(r);
   }
   bool logging = g_WorldLogOn.load();
   double t = WorldLogTime();
@@ -1493,20 +1503,23 @@ namespace
 __int64* __fastcall hTrackedPosition(__int64 pData, __int64* pOut, __int64 pContext)
 {
   __int64* result = oTrackedPosition(pData, pOut, pContext);
-  __try
+  if (util::DiagnosticsOn())   // for the 10 s line only
   {
-    __int64 pLink = pOut[0];
-    float const* m = (pLink && (*(BYTE const*)(pLink + 0x1C) & 0x40)) ? *(float const**)pLink : (float const*)pOut[1];
-    if (m)
+    __try
     {
-      memcpy(g_TrackerLevelPosition, m + 12, sizeof(g_TrackerLevelPosition));
-      g_TrackerHasLevelPosition.store(true, std::memory_order_relaxed);
+      __int64 pLink = pOut[0];
+      float const* m = (pLink && (*(BYTE const*)(pLink + 0x1C) & 0x40)) ? *(float const**)pLink : (float const*)pOut[1];
+      if (m)
+      {
+        memcpy(g_TrackerLevelPosition, m + 12, sizeof(g_TrackerLevelPosition));
+        g_TrackerHasLevelPosition.store(true, std::memory_order_relaxed);
+      }
     }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    g_TrackerUpdates.fetch_add(1, std::memory_order_relaxed);
   }
-  __except (EXCEPTION_EXECUTE_HANDLER)
-  {
-  }
-  g_TrackerUpdates.fetch_add(1, std::memory_order_relaxed);
   if (g_TrackersFollowCamera.load(std::memory_order_acquire))
   {
     pOut[0] = 0;
@@ -1715,6 +1728,8 @@ namespace
 // From the replay (game thread): the live KrugerSec spawners, in the log
 void util::hooks::LogSpawners(char const* why)
 {
+  if (!util::DiagnosticsOn())
+    return;
   std::vector<__int64> spawners;
   {
     std::lock_guard<std::mutex> lock(g_SpawnersMutex);
@@ -1739,7 +1754,8 @@ bool util::hooks::HoldAIDespawn(bool hold)
   if (g_HoldAIDespawn.exchange(hold) != hold)
   {
     int held = g_AIDespawnsHeld.exchange(0);
-    LogContainerCounts();
+    if (util::DiagnosticsOn())
+      LogContainerCounts();
     if (hold)
     {
       KeepKept();
@@ -2297,8 +2313,11 @@ namespace
     g_ReplayFxHandles[handle] = e.Id;
     g_ReplayFx.push_back(e);
     ++g_ReplayFxEarlier;
-    ++g_FxEarlierTaken[blueprint];
-    g_FxEarlierUpdates[blueprint];   // listed at the end even with no other updates
+    if (util::DiagnosticsOn())
+    {
+      ++g_FxEarlierTaken[blueprint];
+      g_FxEarlierUpdates[blueprint];   // listed at the end even with no other updates
+    }
     auto pending = g_FxPendingParams.find(handle);
     if (pending != g_FxPendingParams.end())
     {
@@ -2454,6 +2473,8 @@ namespace
       "of Faith as it started recording: taken in (played again while the game's own are gone)", g_ReplayFxStatic,
       (int)nearKinds.size(), ReplayEffectRadius);
     // Diagnostic (temporary): which
+    if (!util::DiagnosticsOn())
+      return;
     int listed = 0;
     for (auto const& n : nearKinds)
     {
@@ -2686,7 +2707,8 @@ namespace
     ++(handle ? g_ReplayFxPlayed : g_ReplayFxSkipped);
     if (!handle)
       return;
-    ++g_ReplayFxPlayedBy[e.Blueprint];
+    if (util::DiagnosticsOn())
+      ++g_ReplayFxPlayedBy[e.Blueprint];
     ActiveReplayEffect a{};
     size_t giveFirst = (size_t)-1;
     {
@@ -2748,7 +2770,7 @@ void __fastcall hEffectMove(__int64 manager, unsigned int handle, __int64 rows, 
     // One started before the recording: taken in here (its place now is
     // where it's played)
     unsigned int id = 0;
-    if (!TakeInEarlierEffect(handle, m.Rows, id))
+    if (!TakeInEarlierEffect(handle, m.Rows, id) && util::DiagnosticsOn())
       NoteEarlierEffectUpdate(handle, m.Rows, true);
     return;
   }
@@ -2823,7 +2845,8 @@ void __fastcall hEffectParams(__int64 manager, unsigned int handle, __int64 list
   auto it = g_ReplayFxHandles.find(handle);
   if (it == g_ReplayFxHandles.end())
   {
-    NoteEarlierEffectUpdate(handle, nullptr, false);
+    if (util::DiagnosticsOn())
+      NoteEarlierEffectUpdate(handle, nullptr, false);
     // One started before the recording, not taken in yet: its last ones kept
     // for when it is (see TakeInEarlierEffect)
     if (read > 0 && FindEffectBlueprint(handle) &&
@@ -2833,7 +2856,8 @@ void __fastcall hEffectParams(__int64 manager, unsigned int handle, __int64 list
   }
   if (it->second >= g_ReplayFx.size())
     return;
-  ++g_FxRecordedParams[g_ReplayFx[it->second].Blueprint];
+  if (util::DiagnosticsOn())
+    ++g_FxRecordedParams[g_ReplayFx[it->second].Blueprint];
   if (read < 0)
     ++g_ReplayFxParamsWithObjects;
   else if (read > 0)
@@ -2948,6 +2972,8 @@ void util::hooks::ReplayEffectsStopRecording()
     (int)g_ReplayFxParamRanges.size(), (int)g_ReplayFxParams.size(), g_ReplayFxParamBytes.size() / 1048576.0,
     g_ReplayFxParamsWithObjects, g_ReplayFxParamsDropped, aliveAtEnd);
   // Diagnostic (temporary): by kind, and the ones that were playing before
+  if (!util::DiagnosticsOn())
+    return;
   std::unordered_map<__int64, int> byKind;
   for (ReplayEffect const& e : g_ReplayFx)
     ++byKind[e.Blueprint];
@@ -3087,16 +3113,19 @@ void util::hooks::ReplayEffectsStop()
       g_ReplayFxGameStillPlays);
   g_ReplayFxGameStillPlays = 0;
   // Diagnostic (temporary): by kind
-  std::vector<std::pair<int, __int64>> kinds;
-  for (auto const& k : g_ReplayFxPlayedBy)
-    kinds.push_back({ k.second, k.first });
-  std::sort(kinds.begin(), kinds.end(), [](std::pair<int, __int64> const& a, std::pair<int, __int64> const& b) {
-    return a.first > b.first; });
-  for (size_t i = 0; i < kinds.size() && i < 40; ++i)
+  if (util::DiagnosticsOn())
   {
-    char name[128];
-    ReadAssetName(kinds[i].second, name, sizeof(name));
-    util::log::Write("Replay (diagnostic):   played %d x %s", kinds[i].first, name);
+    std::vector<std::pair<int, __int64>> kinds;
+    for (auto const& k : g_ReplayFxPlayedBy)
+      kinds.push_back({ k.second, k.first });
+    std::sort(kinds.begin(), kinds.end(), [](std::pair<int, __int64> const& a, std::pair<int, __int64> const& b) {
+      return a.first > b.first; });
+    for (size_t i = 0; i < kinds.size() && i < 40; ++i)
+    {
+      char name[128];
+      ReadAssetName(kinds[i].second, name, sizeof(name));
+      util::log::Write("Replay (diagnostic):   played %d x %s", kinds[i].first, name);
+    }
   }
   g_ReplayFxPlayedBy.clear();
   g_ReplayFxLast = -1.0;
@@ -3190,7 +3219,8 @@ unsigned int __fastcall hEffectPlay(__int64 manager, __int64 blueprint, float co
     return 0;
   }
   unsigned int handle = oEffectPlay(manager, blueprint, transform, a4, a5, a6, a7, a8, a9, a10);
-  NoteEffect(blueprint, transform, (__int64)_ReturnAddress(), handle, a4, a5, a6, a7, a8);
+  if (util::DiagnosticsOn())
+    NoteEffect(blueprint, transform, (__int64)_ReturnAddress(), handle, a4, a5, a6, a7, a8);
   if (handle)
     NoteSlideEffect(blueprint, transform);
   if (handle)
@@ -3219,6 +3249,8 @@ void util::hooks::UpdateEffectLog(float const* faith)
   if (faith)
     memcpy(g_EffectCenter, faith, sizeof(g_EffectCenter));
   g_EffectCenterOk.store(faith != nullptr, std::memory_order_relaxed);
+  if (!util::DiagnosticsOn())   // the rest is the effects log
+    return;
   double now = GetTickCount64() / 1000.0;
   if (now - g_EffectLogAt < EffectLogInterval)
     return;
@@ -4014,7 +4046,7 @@ static void DropStandIn(__int64 entity);         // see AskStandIn
 
 __int64 __fastcall hServerCharacterDtor(__int64 entity, unsigned int flags)
 {
-  if (g_HoldAIDespawn.load(std::memory_order_relaxed))
+  if (util::DiagnosticsOn() && g_HoldAIDespawn.load(std::memory_order_relaxed))
     NoteCharacterDtor(entity);
   DropKept(entity);
   DropStandIn(entity);
@@ -4056,7 +4088,8 @@ static void NoteKeptDroneDtor(__int64 entity)
 
 __int64 __fastcall hServerDroneDtor(__int64 entity, unsigned int flags)
 {
-  NoteKeptDroneDtor(entity);
+  if (util::DiagnosticsOn())
+    NoteKeptDroneDtor(entity);
   DropKept(entity);
   return oServerDroneDtor(entity, flags);
 }
@@ -5834,7 +5867,7 @@ void __fastcall hContainerDestroyAll(__int64 container, int realm)
 {
   // The recorded and noted sounds whose entities go with it (see g_SoundGen)
   SoundContainerGone(container);
-  if (g_HoldAIDespawn.load(std::memory_order_relaxed))
+  if (util::DiagnosticsOn() && g_HoldAIDespawn.load(std::memory_order_relaxed))
   {
     ContainerPeople people;
     ReadContainerPeople(container, people);
@@ -5919,7 +5952,7 @@ static void DropCullBox(__int64 character);   // see util::hooks::SetCullBox
 
 __int64 __fastcall hClientCharacterDtor(__int64 entity, unsigned int flags)
 {
-  if (g_HoldAIDespawn.load(std::memory_order_relaxed))
+  if (util::DiagnosticsOn() && g_HoldAIDespawn.load(std::memory_order_relaxed))
     NoteCharacterDtor(entity);
   DropCullBox(entity);
   return oClientCharacterDtor(entity, flags);
@@ -6694,6 +6727,8 @@ namespace
 
 void util::hooks::WatchLoadScreen()
 {
+  if (!util::DiagnosticsOn())
+    return;
   // Camera update thread only
   static ULONGLONG s_shownAt = 0, s_nextAt = 0, s_loggedAt = 0, s_read = 0;
   static int s_known = 0;
@@ -6734,6 +6769,8 @@ void util::hooks::LogLevelStreaming(char const* prefix)
 {
   // Any thread: it only reads (inside __try). For the hang watch (Main.cpp):
   // a quit that never ends the game (2026-10-27) may wait on a sub-level
+  if (!util::DiagnosticsOn())
+    return;
   if (!g_gameHandle || !IsStreamingWatchCode((BYTE const*)g_gameHandle))
   {
     util::log::Write("%s: the game's level streaming isn't where the tools know it", prefix);
@@ -7211,6 +7248,8 @@ void util::hooks::UpdateCrowdTrackers(bool on, float const* camera, float const*
     util::log::Write("Crowd and traffic sounds: %s", follow ? "placed from the free camera" : "placed by the level again");
 
   // Every 10 s while it's on: how many tracker updates, and where the level put them
+  if (!util::DiagnosticsOn())
+    return;
   static ULONGLONG s_lastLog = 0;
   ULONGLONG now = GetTickCount64();
   if (!follow || now - s_lastLog < 10000)
@@ -8023,7 +8062,8 @@ void util::hooks::SetReplayPlaying(bool playing)
     }
     return;
   }
-  LogHeard();
+  if (util::DiagnosticsOn())
+    LogHeard();
   int effects = g_LiveEffectSoundsLeftOut.exchange(0), events = g_LiveVoiceEventsLeftOut.exchange(0),
     player = g_LivePlayerEventsLeftOut.exchange(0);
   if (effects || events || player)
@@ -8676,6 +8716,8 @@ void util::hooks::ReplaySoundsStopRecording()
       "recorded, %d with their voice among the recorded ones; %d more left out: no room)", lines.size(), started, cleared,
       withVoice, dropped);
   // Diagnostic (temporary): the first of them
+  if (!util::DiagnosticsOn())
+    return;
   for (size_t i = 0; i < lines.size() && i < 30; ++i)
   {
     VoiceLine const& l = lines[i];
@@ -8878,7 +8920,8 @@ void util::hooks::ReplaySoundsPlay(double time, bool jumped)
     if (voice)
     {
       fires[fireCount++] = { voice, e.Event };
-      NoteHeardReplay(e.Voice, voice, e.Event);
+      if (util::DiagnosticsOn())
+        NoteHeardReplay(e.Voice, voice, e.Event);
     }
   }
   // The sounds given to voices up to this time (a cutscene's lines, see
@@ -9336,7 +9379,7 @@ __int64 __fastcall hVoiceEvent(__int64 pVoice, unsigned int event)
     RagdollVoiceSeen(pVoice, nullptr);
   if (!g_shutdown && ReplaySoundOnEvent(pVoice, event))
     return 0;
-  if (!g_shutdown && g_ReplayPlaying.load(std::memory_order_relaxed))
+  if (util::DiagnosticsOn() && !g_shutdown && g_ReplayPlaying.load(std::memory_order_relaxed))
     NoteHeardLive(pVoice, event);
   if (g_SoundLogOn.load(std::memory_order_relaxed))
   {
@@ -9438,7 +9481,7 @@ static bool IsSoundLogCode(BYTE const* pBase)
 
 bool util::hooks::StartFaithSoundLog(double seconds)
 {
-  if (!oSoundCreate || !oVoiceSetTransform || !oVoiceEvent || !oSoundEntityEvent)
+  if (!util::DiagnosticsOn() || !oSoundCreate || !oVoiceSetTransform || !oVoiceEvent || !oSoundEntityEvent)
     return false;
   LockSoundLog();
   memset(g_SoundLogVoices, 0, sizeof(g_SoundLogVoices));
@@ -11438,7 +11481,7 @@ __int64 __fastcall hSunShadowSetup(__int64 pRenderer, __int64 a2, __int64 pView,
 {
   float reach = g_SunShadowReach.load(std::memory_order_relaxed);
   SunShadowInputs in{};
-  bool read = ReadSunShadowInputs(pView, in);
+  bool read = util::DiagnosticsOn() && ReadSunShadowInputs(pView, in);   // for the log only
   float levelReach = -1.f;
   float* put = reach > 0.f ? PutSunShadowReach(pView, reach, levelReach) : nullptr;
   if (read)
@@ -11475,6 +11518,8 @@ void util::hooks::SetSunShadowReach(float metres)
 
 void util::hooks::LogSunShadowReach()
 {
+  if (!util::DiagnosticsOn())
+    return;
   SunShadowInputs seen[SunShadowViews];
   int count;
   {
@@ -13272,7 +13317,7 @@ __int64 __fastcall hVisualEnvironmentBlend(__int64 view, __int64 a2, __int64 a3,
   else if (hide)
     MarkVeViewDirty(view);
   if (hide)
-    HideHitEnvironments(view, true);
+    HideHitEnvironments(view, util::DiagnosticsOn());
   QueryPerformanceCounter(&t1);
   toolsTicks += t1.QuadPart - t0.QuadPart;
   __int64 result = oVisualEnvironmentBlend(view, a2, a3, a4);
@@ -13369,7 +13414,8 @@ int __fastcall hEmitterViewCull(__int64 emitter, __int64 a2, __int64 a3, float a
   int drawn = oEmitterViewCull(emitter, a2, a3, a4, a5, a6, a7, a8, a9, a10);
   if (drawn == 0 && !g_shutdown && g_LensHidden.load(std::memory_order_relaxed) && IsLensEmitter(emitter))
   {
-    g_LensLeftOut.fetch_add(1, std::memory_order_relaxed);
+    if (util::DiagnosticsOn())
+      g_LensLeftOut.fetch_add(1, std::memory_order_relaxed);
     return 5;
   }
   return drawn;
@@ -13487,9 +13533,12 @@ void util::hooks::SetBillboardCamera(bool on, float const* transform, float fovY
   }
   ReleaseSRWLockExclusive(&g_BillboardCameraLock);
   // For the heard-sounds diagnostic (NoteHeardLive)
-  if (on && transform)
-    memcpy(g_HeardCamera, transform + 12, sizeof(g_HeardCamera));
-  g_HeardCameraOk = on && transform;
+  if (util::DiagnosticsOn())
+  {
+    if (on && transform)
+      memcpy(g_HeardCamera, transform + 12, sizeof(g_HeardCamera));
+    g_HeardCameraOk = on && transform;
+  }
 }
 
 void __fastcall hBillboardSizes(__int64 manager, __int64 feeds)
@@ -14694,6 +14743,8 @@ static void HookJobQueueFull()
 
 void util::hooks::NoteTimeJump(float from, float to)
 {
+  if (!util::DiagnosticsOn())   // it only feeds the job queue's log
+    return;
   g_TimeJumpFrom = from;
   g_TimeJumpTo = to;
   g_TimeJumpTick = GetTickCount64();
@@ -14702,6 +14753,8 @@ void util::hooks::NoteTimeJump(float from, float to)
 
 void util::hooks::SampleJobQueue()
 {
+  if (!util::DiagnosticsOn())
+    return;
   // A time jump opens a window (or keeps it open) for the queue's peak after it
   long jumps = g_TimeJumps.load();
   if (jumps != g_QueueJumpsSeen)
@@ -14742,23 +14795,26 @@ void util::hooks::LogJobQueue()
   int count = 0, room = 0;
   if (!ReadJobQueue(count, room))
     return;
-  if (room != g_JobQueueRoom)
+  if (util::DiagnosticsOn())   // the room and the peaks: diagnostics only
   {
-    g_JobQueueRoom = room;
-    g_JobQueueMostLogged = 0;
-    util::log::Write("The game's job queue (jobs for any thread) has room for %d", room);
-  }
-  // The most waiting, logged when past another tenth of the room from half of it
-  int most = g_JobQueueMost.exchange(0);
-  int tenth = (int)((long long)most * 10 / room);
-  if (tenth >= 5 && tenth > g_JobQueueMostLogged)
-  {
-    g_JobQueueMostLogged = tenth;
-    util::log::Write("The game's job queue: up to %d of %d jobs waiting at once", most, room);
+    if (room != g_JobQueueRoom)
+    {
+      g_JobQueueRoom = room;
+      g_JobQueueMostLogged = 0;
+      util::log::Write("The game's job queue (jobs for any thread) has room for %d", room);
+    }
+    // The most waiting, logged when past another tenth of the room from half of it
+    int most = g_JobQueueMost.exchange(0);
+    int tenth = (int)((long long)most * 10 / room);
+    if (tenth >= 5 && tenth > g_JobQueueMostLogged)
+    {
+      g_JobQueueMostLogged = tenth;
+      util::log::Write("The game's job queue: up to %d of %d jobs waiting at once", most, room);
+    }
   }
   // The peak after a time jump, once QueueJumpWindowMs passed without another
   ULONGLONG now = GetTickCount64();
-  if (g_QueueJumpOpen && now - g_QueueJumpLast >= QueueJumpWindowMs)
+  if (util::DiagnosticsOn() && g_QueueJumpOpen && now - g_QueueJumpLast >= QueueJumpWindowMs)
   {
     g_QueueJumpOpen = false;
     char from[16], to[16], jumps[32] = "";
@@ -16164,7 +16220,8 @@ void util::hooks::Init()
   if (IsEffectPlayCode((BYTE*)g_gameHandle))
     CreateHook("EffectPlay", (__int64)g_gameHandle + EffectPlayRva, hEffectPlay, &oEffectPlay);
   else
-    util::log::Warning("The game's effect code isn't what the tools know: the effects diagnostic is off");
+    util::log::Warning("The game's effect code isn't what the tools know: the replay's gun effects and the puddle rings "
+      "from slides are off");
   // An effect's moves and stop, so the replay's tracers fly as the recorded ones did
   if (oEffectPlay && IsEffectMoveStopCode((BYTE*)g_gameHandle))
   {
@@ -16244,7 +16301,8 @@ void util::hooks::Init()
   if (IsContainerDestroyCode((BYTE*)g_gameHandle))
   {
     CreateHook("ContainerDestroyAll", (__int64)g_gameHandle + ContainerDestroyAllRva, hContainerDestroyAll, &oContainerDestroyAll);
-    CreateHook("ContainerDestroyOne", (__int64)g_gameHandle + ContainerDestroyOneRva, hContainerDestroyOne, &oContainerDestroyOne);
+    if (util::DiagnosticsOn())   // only for the diagnostic
+      CreateHook("ContainerDestroyOne", (__int64)g_gameHandle + ContainerDestroyOneRva, hContainerDestroyOne, &oContainerDestroyOne);
   }
   else
     util::log::Warning("The game's entity containers aren't the code the tools know, the replay doesn't log what takes people out");
@@ -16258,8 +16316,11 @@ void util::hooks::Init()
   // MagRope line when the world log goes.
   if (IsWorldLogCode((BYTE*)g_gameHandle))
   {
-    CreateHook("TimelineCtor", (__int64)g_gameHandle + TimelineCtorRva, hTimelineCtor, &oTimelineCtor);
-    CreateHook("TimelineDtor", (__int64)g_gameHandle + TimelineDtorRva, hTimelineDtor, &oTimelineDtor);
+    if (util::DiagnosticsOn())   // the world log's only
+    {
+      CreateHook("TimelineCtor", (__int64)g_gameHandle + TimelineCtorRva, hTimelineCtor, &oTimelineCtor);
+      CreateHook("TimelineDtor", (__int64)g_gameHandle + TimelineDtorRva, hTimelineDtor, &oTimelineDtor);
+    }
     CreateHook("RopeCtor", (__int64)g_gameHandle + RopeCtorRva, hRopeCtor, &oRopeCtor);
     CreateHook("RopeDtor", (__int64)g_gameHandle + RopeDtorRva, hRopeDtor, &oRopeDtor);
   }

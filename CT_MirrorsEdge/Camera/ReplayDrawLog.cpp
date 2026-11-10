@@ -281,7 +281,7 @@ namespace
 
   bool ParseUnguarded(BYTE const* code, SIZE_T size, ShaderInfo& info)
   {
-    info.Hash = Fnv64(code, size);
+    info.Hash = util::DiagnosticsOn() ? Fnv64(code, size) : 0;   // read by the log only
     info.Size = (UINT)size;
     info.VectorOffsetsAt = -1;
     info.LmsSlots[0] = info.LmsSlots[1] = -1;
@@ -389,14 +389,18 @@ namespace
     ShaderInfo info{};
     info.Parsed = ParseShader(code, size, info);
     info.Vertex = vertex;
-    if (!info.Parsed)
-      ++g_ShadersUnread;
-    // A shader with a resource named for cloth, as the game makes it (whether
-    // there is any; see ShaderInfo::Cloth)
-    if (info.Parsed && info.Cloth && g_ClothShaderLogs.fetch_add(1) < MaxClothShaderLogs)
-      util::log::Write("Draw log (diagnostic): a %s shader made with a resource named for cloth (0x%I64X, code hash %016llX, %u bytes): %s",
-        vertex ? "vertex" : "pixel", shader, info.Hash, info.Size, info.Names);
-    ++(vertex ? g_VertexShaders : g_PixelShaders);
+    // (the counts and the cloth line: diagnostics only)
+    if (util::DiagnosticsOn())
+    {
+      if (!info.Parsed)
+        ++g_ShadersUnread;
+      // A shader with a resource named for cloth, as the game makes it (whether
+      // there is any; see ShaderInfo::Cloth)
+      if (info.Parsed && info.Cloth && g_ClothShaderLogs.fetch_add(1) < MaxClothShaderLogs)
+        util::log::Write("Draw log (diagnostic): a %s shader made with a resource named for cloth (0x%I64X, code hash %016llX, %u bytes): %s",
+          vertex ? "vertex" : "pixel", shader, info.Hash, info.Size, info.Names);
+      ++(vertex ? g_VertexShaders : g_PixelShaders);
+    }
     std::lock_guard<std::mutex> lock(g_ShaderMutex);
     if (g_Shaders.size() < MaxShaders || g_Shaders.count(shader))
       g_Shaders[shader] = info;
@@ -415,6 +419,8 @@ namespace
   // crowd member's pose is read)
   void SaveCrowdShader(void const* code, SIZE_T size, bool vertex)
   {
+    if (!util::DiagnosticsOn())
+      return;
     static char const* const names[] = { "indirectionBuffer", "animTexture", "animationBuffer" };
     std::string bytes((char const*)code, size);
     bool crowd = false;
@@ -1137,9 +1143,13 @@ void replay_drawlog::Present(ID3D11Device* pDevice, ID3D11DeviceContext* pContex
       (LPVOID*)&oCreateVertexShader);
     bool ps = util::hooks::CreateGameHook("DrawLogCreatePixelShader", (__int64)table[PixelShaderSlot], (PVOID)hCreatePixelShader,
       (LPVOID*)&oCreatePixelShader);
-    util::log::Write("Draw log (diagnostic): the game's shaders are noted as it makes them (%s, %s)",
-      vs ? "CreateVertexShader" : "CreateVertexShader NOT hooked", ps ? "CreatePixelShader" : "CreatePixelShader NOT hooked");
+    if (util::DiagnosticsOn())
+      util::log::Write("Draw log (diagnostic): the game's shaders are noted as it makes them (%s, %s)",
+        vs ? "CreateVertexShader" : "CreateVertexShader NOT hooked", ps ? "CreatePixelShader" : "CreatePixelShader NOT hooked");
   }
+  // The rest is the draw log's own (diagnostics only; the hooks above are the replay's too)
+  if (!util::DiagnosticsOn())
+    return;
   unsigned frame = g_Frame.fetch_add(1) + 1;
   // The sampled frame before this one: its counts kept for the pass list
   if (frame % SampleEvery == 1)
@@ -1246,7 +1256,7 @@ void replay_drawlog::Stop()
 
 void replay_drawlog::NoteMesh(__int64 vb, __int64 ib, char const* name)
 {
-  if (!vb)
+  if (!vb || !util::DiagnosticsOn())   // read by the draw log only
     return;
   MeshNote note{ ib, "" };
   strncpy_s(note.Name, name ? name : "?", _TRUNCATE);

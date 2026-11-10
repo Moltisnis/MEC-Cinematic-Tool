@@ -1419,7 +1419,7 @@ namespace
 
   void NoteSkip(char const* why)
   {
-    if (why == g_SkipWhy)
+    if (!util::DiagnosticsOn() || why == g_SkipWhy)
       return;
     double now = wetlook::TimeNow();
     if (SkipLineAllowed(now))
@@ -1430,7 +1430,7 @@ namespace
 
   void NoteDrawing()
   {
-    if (!g_SkipWhy)
+    if (!util::DiagnosticsOn() || !g_SkipWhy)
       return;
     double now = wetlook::TimeNow();
     if (SkipLineAllowed(now))
@@ -2732,7 +2732,7 @@ void wetlook::NoteHerSplash(float const* world, int impact, unsigned int materia
   }
   ULONGLONG ms = GetTickCount64();
   // (the ice under her step in the game's water, see IcePieceUnder)
-  if (material == 16 && g_IcedNow.load(std::memory_order_relaxed) &&
+  if (util::DiagnosticsOn() && material == 16 && g_IcedNow.load(std::memory_order_relaxed) &&
       (!g_IceStepLoggedMs || ms - g_IceStepLoggedMs > 30000))
   {
     g_IceStepLoggedMs = ms;
@@ -4207,11 +4207,13 @@ void wetlook::Apply(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, ID3D11Dev
   if (!g_WarmedUp && pSwapChain && pDevice && pContext && !g_Failed.load(std::memory_order_relaxed) &&
       g_MakeState.load(std::memory_order_acquire) == 2)
     WarmUp(pSwapChain, pDevice, pContext);
-  LogTimes();
+  if (util::DiagnosticsOn())
+    LogTimes();
   // (the performance test's breakdown, see BreakdownSkips)
   UpdateBreakdown(pContext);
   // (diagnostic: where the game's screen-space reflections run, SsrOrder.h)
-  ssrorder::AtPresent(pContext);
+  if (util::DiagnosticsOn())
+    ssrorder::AtPresent(pContext);
   // (the constants for the G-buffer's wet ground only once written below)
   g_LastFilled = false;
   ScopedTime timed(TimeSetUp);
@@ -4545,7 +4547,7 @@ void wetlook::Apply(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, ID3D11Dev
   gameframe::Frame gbuffer{};
   bool haveGbuffer = (snowed || wet) && gameframe::Take(gbuffer) && gbuffer.Width == back.Width && gbuffer.Height == back.Height;
   // (diagnostic: the camera drawn with against the game's own of the frame)
-  if (haveGbuffer)
+  if (haveGbuffer && util::DiagnosticsOn())
     gameframe::CheckCamera(pDevice, pContext, t, p, (float)back.Width, (float)back.Height);
   // The ground's marks (GroundMarks.h): the crowd's steps and the traffic's
   // wheels queued since drawn into its map, red where the snow lies, green
@@ -5409,7 +5411,7 @@ void wetlook::Apply(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, ID3D11Dev
     ID3D11Buffer* everything = SkipBuffer(pDevice, 0);
     pContext->PSSetConstantBuffers(2, 1, &everything);
   }
-  GpuTimes* gpuTimes = BeginGpuTimes(pDevice, pContext);
+  GpuTimes* gpuTimes = util::DiagnosticsOn() ? BeginGpuTimes(pDevice, pContext) : nullptr;   // diagnostics only
   NoteDrawing();
   pContext->Draw(3, 0);
   if (gpuTimes)

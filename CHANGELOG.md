@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **Release cleanup for 2.0.0** (the user, 2026-11-10: "Wait for the latest solid ground session to end then clean up";
+  their choices: GroundProps.bin compressed, diagnostics off behind a switch, source comments and this changelog left
+  as they are).
+  - **Diagnostics off by default, behind one switch:** `[Debug] Diagnostics = true` in Cinematic Tools\config.ini turns
+    them back on (read in Main::Initialize before the log, the hooks and the tools' threads: util::DiagnosticsOn();
+    written back by SaveConfig only while on). Off: no "(diagnostic)" lines and none of the work behind them: the
+    Effects, Sun shadows, Green screen (and its depth read-back), Wet surfaces, Snow, Weather, Free camera, Loading
+    screen and Exit lines; the crowd shader .dxbc dumps; Save the G-buffer (hidden); the SSR watcher's hooks; the asset
+    log's research hooks (CreateTexture2D, bundles, entity creation; the mission hooks stay); the draw log stage 0 on
+    every recording (replay_shapes::WantDrawHooks keeps the replay's draw hooks); the replay's people lines, recipe
+    lines and other research lines; the recording-cost and "(performance, diagnostic)" timers; the job-queue sampler
+    and peaks (the "was full" warning stays); the crowd tracker line; the container, drone and character destroy
+    diagnostics with their stack captures; the world log's timeline hooks and the sound log's entity table; the DoF
+    test's file trigger (the button stays); the hang watch's Close / LevelGone / ExitHang reports. Kept: crash notes,
+    the Hang_ report (the 10 newest are kept, older ones deleted at start), the stuck-quit end, every feature line.
+    util::log also drops any line whose format says "diagnostic" (or, for "%s" lines, whose text does before its
+    first ':') while off.
+  - **GroundProps.bin stored packed:** the DLL embeds Resources\GroundProps.ctpk (LZMS, 19,997,200 bytes for v13's
+    151,476,818), unpacked at ground::Init into memory freed when Props::Load returns (Util/PackedResource.cpp: header,
+    stream size and SHA-256 checked; cabinet.dll loaded from the system folder only when needed). tools/pack_resource.py
+    packs it; build.ps1 packs again whenever GroundProps.bin is newer; GroundProps.bin is in .gitignore. Offline test of
+    the unpack code (scratchpad test_unpack.exe): byte for byte in 1.04 s at Idle; 9 kinds of damaged input refused.
+  - **Panini** (Visuals/Panini.hlsl) rewritten from the 2010 paper's equation (cos(phi) solved from x = k sin(phi) /
+    (d + cos(phi))), recompiled with the header's fxc lines (the old source rebuilt byte for byte with them first):
+    2,000,000 points in float32 within 0.02 px of the old shader at 4K.
+  - **No build paths in the DLLs:** /PDBALTPATH for both DLLs; imgui's checks (IM_ASSERT, imgui/imconfig.h) fail as
+    assert() does (the CRT's message, then abort) but name the file "imgui" instead of its full path.
+  - Also off with the switch (found by a review of the cleanup): road traffic's minute lines, the free camera's lens
+    count, the mouse-wheel probe lines, the pose editor's drone line, three playback recipe lines, the mission reads
+    while not recording, and Street level's planning-time line, unspared kill volume line and ground-ids line. A report kind that isn't written no longer takes one of the hang watch's 6 a session.
+  - THIRD_PARTY_NOTICES.md: MinHook's licence text, ProggyClean.ttf, the Panini paper. .gitignore: logs, dumps,
+    Cinematic Tools\ output, .claude\, *.npz. The project filters list every file (78 were missing).
 - **GAME > Faith in the streets > Solid street: the Sky City hall's low ceiling over its east end lifted** (after the
   previous entry's install, the user: "Yes, fix it"). Details in Research_Ground_Level_2026-11-01.md section 25.
   - With Solid street on, skycity_building_01's four convex leaves that made the low ceiling (72657, 72678, 72679,

@@ -28,6 +28,12 @@
     <Filter Include="Source Files\Input">
       <UniqueIdentifier>{a39ff477-791b-4a6d-8b7d-ddb05372e106}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\Lights">
+      <UniqueIdentifier>{63d42d48-b82d-44a8-8270-bce82d7fd852}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Visuals">
+      <UniqueIdentifier>{3705cc34-03a1-4cd5-8850-5a521ceb3a57}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DllMain.cpp">
@@ -67,6 +73,9 @@
       <Filter>Source Files\Util</Filter>
     </ClCompile>
     <ClCompile Include="Util\Util.cpp">
+      <Filter>Source Files\Util</Filter>
+    </ClCompile>
+    <ClCompile Include="Util\PackedResource.cpp">
       <Filter>Source Files\Util</Filter>
     </ClCompile>
     <ClCompile Include="Util\ImGuiEXT.cpp">
@@ -182,6 +191,9 @@
     <ClInclude Include="Util\Util.h">
       <Filter>Source Files\Util</Filter>
     </ClInclude>
+    <ClInclude Include="Util\PackedResource.h">
+      <Filter>Source Files\Util</Filter>
+    </ClInclude>
     <ClInclude Include="Input\InputSystem.h">
       <Filter>Source Files\Input</Filter>
     </ClInclude>
@@ -275,5 +287,231 @@
   <ItemGroup>
     <None Include="Resources\imgui_PixelShader.cso" />
     <None Include="Resources\imgui_VertexShader.cso" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Camera\CameraCollision.cpp">
+      <Filter>Source Files\Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="Util\Perf.cpp">
+      <Filter>Source Files\Util</Filter>
+    </ClCompile>
+    <ClCompile Include="Util\GameMessages.cpp">
+      <Filter>Source Files\Util</Filter>
+    </ClCompile>
+    <ClCompile Include="Util\GameState.cpp">
+      <Filter>Source Files\Util</Filter>
+    </ClCompile>
+    <ClCompile Include="Lights\LightManager.cpp">
+      <Filter>Source Files\Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\VisualsManager.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\FrameShot.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\LensDistortion.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\Panini.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\GameFrame.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\GroundMarks.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\GreenPlane.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\Weather.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\Thunder.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\WetLook.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\DryShapes.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\SnowBodies.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\WorldImages.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\SsrOrder.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+    <ClCompile Include="Visuals\GbufferWet.cpp">
+      <Filter>Source Files\Visuals</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Camera\CameraCollision.h">
+      <Filter>Source Files\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera\DogenGlowVs.h">
+      <Filter>Source Files\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera\DogenGlowPs.h">
+      <Filter>Source Files\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera\RunnersVisionVs.h">
+      <Filter>Source Files\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera\RunnersVisionPs.h">
+      <Filter>Source Files\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera\ReplayShapesVs.h">
+      <Filter>Source Files\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="Camera\ReplayShapesPs.h">
+      <Filter>Source Files\Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="Util\Perf.h">
+      <Filter>Source Files\Util</Filter>
+    </ClInclude>
+    <ClInclude Include="Util\GameMessages.h">
+      <Filter>Source Files\Util</Filter>
+    </ClInclude>
+    <ClInclude Include="Util\GameState.h">
+      <Filter>Source Files\Util</Filter>
+    </ClInclude>
+    <ClInclude Include="Lights\LightManager.h">
+      <Filter>Source Files\Lights</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\VisualsManager.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\FrameShot.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\LensDistortion.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\LensDistortionVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\LensDistortionPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\Panini.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\PaniniVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\PaniniPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GameFrame.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GroundMarks.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GroundMarksVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GroundMarksPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GroundMarksFillVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GroundMarksFillPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GreenPlane.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\Weather.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\Thunder.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\ThunderSynth.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WetLook.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\DryShapes.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\SnowBodies.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\SnowBodyMesh.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\SnowHandMesh.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WetLookVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WetLookPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WetLookQueryPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WetLookNodesPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WetLookSnowVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WetLookSnowPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\IceTable.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GreenPlaneVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GreenPlanePs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\D3DStateBackup.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WorldImages.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\SsrOrder.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GbufferWet.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GbufferWetPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\GbufferWetInfoPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WorldImagesVs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+    <ClInclude Include="Visuals\WorldImagesPs.h">
+      <Filter>Source Files\Visuals</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Visuals\LensDistortion.hlsl" />
+    <None Include="Visuals\Panini.hlsl" />
+    <None Include="Visuals\WorldImages.hlsl" />
+    <None Include="Camera\ReplayShapes.hlsl" />
+    <None Include="Camera\DogenGlow.hlsl" />
+    <None Include="Camera\RunnersVision.hlsl" />
+    <None Include="Visuals\GbufferWet.hlsl" />
   </ItemGroup>
 </Project>

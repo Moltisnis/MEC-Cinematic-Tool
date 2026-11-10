@@ -1102,7 +1102,7 @@ namespace
       pContext->Unmap(g_Now.Get(), 0);
     }
     // (the diagnostic dump, see g_DumpAsked: what the pass reads, as it was)
-    bool dumping = g_Dump.empty() && g_DumpAsked.exchange(false);
+    bool dumping = util::DiagnosticsOn() && g_Dump.empty() && g_DumpAsked.exchange(false);
     if (dumping)
     {
       SYSTEMTIME now{};
@@ -1129,7 +1129,7 @@ namespace
       StageForDump(device.Get(), pContext, "wetparams", inputs.Constants);
       g_DumpFrames = 0;
     }
-    TimeSlot* time = BeginTime(device.Get(), pContext);
+    TimeSlot* time = util::DiagnosticsOn() ? BeginTime(device.Get(), pContext) : nullptr;   // diagnostics only
 
     GameState saved;
     saved.Save(g_Context1.Get());
@@ -1220,7 +1220,8 @@ namespace
     }
     g_Drawn = true;
     g_InfoWhole = width == depthDesc.Width && height == depthDesc.Height;
-    ++g_FramesDrawn;
+    if (util::DiagnosticsOn())   // (the timing's line only, see ReadTimes)
+      ++g_FramesDrawn;
     g_LastSkip = nullptr;
     if (!g_LoggedDrawn)
     {
@@ -1252,7 +1253,7 @@ void gbufferwet::OnPass(ID3D11DeviceContext* pContext, int from, int to, UINT co
   {
     for (int i = 0; i < Targets; ++i)
       g_TargetViews[i] = targets[i];
-    g_MaterialView = count > 2 ? targets[2] : nullptr;
+    g_MaterialView = util::DiagnosticsOn() && count > 2 ? targets[2] : nullptr;   // (the dump's only)
     ComPtr<ID3D11Resource> resource;
     depth->GetResource(resource.GetAddressOf());
     g_SceneDepth.Reset();
@@ -1318,7 +1319,8 @@ void gbufferwet::FrameEnd()
 {
   if (g_Context1)
   {
-    ReadTimes(g_Context1.Get());
+    if (util::DiagnosticsOn())
+      ReadTimes(g_Context1.Get());
     UpdateBreakdown(g_Context1.Get());
   }
   // (the diagnostic dump, read back once the graphics card has done it)
@@ -1337,6 +1339,8 @@ void gbufferwet::FrameEnd()
 
 void gbufferwet::RequestDump()
 {
+  if (!util::DiagnosticsOn())
+    return;
   g_DumpAsked.store(true);
   util::log::Write("Wet surfaces in the game's lighting (diagnostic): a G-buffer dump asked for, taken the next frame it's drawn");
 }

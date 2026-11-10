@@ -13,6 +13,10 @@
 
 //---- Define assertion handler. Defaults to calling assert().
 //#define IM_ASSERT(_EXPR)  MyAssert(_EXPR)
+// CT_MirrorsEdge: assert()'s own failure (the CRT's message, then abort) with "imgui" for the file, so the DLL
+// holds no source paths (assert() keeps each file's full path)
+#include <assert.h>
+#define IM_ASSERT(_EXPR)  ((_EXPR) ? (void)0 : _wassert(_CRT_WIDE(#_EXPR), L"imgui", (unsigned)(__LINE__)))
 
 //---- Define attributes of all API symbols declarations, e.g. for DLL under Windows.
 //#define IMGUI_API __declspec( dllexport )

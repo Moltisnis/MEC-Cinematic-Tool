@@ -446,9 +446,12 @@ void ReplayVehicles::Play(double time)
         util::log::Warning("Replay: vehicle 0x%I64X couldn't be moved", track.Entity);
       continue;
     }
-    Check(track, now, wanted);
-    memcpy(track.LastWanted, wanted, sizeof(track.LastWanted));
-    track.HasLastWanted = true;
+    if (util::DiagnosticsOn())
+    {
+      Check(track, now, wanted);
+      memcpy(track.LastWanted, wanted, sizeof(track.LastWanted));
+      track.HasLastWanted = true;
+    }
   }
 }
 

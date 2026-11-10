@@ -24,6 +24,21 @@ minhook/build/VC15/lib/
 # Python helpers
 __pycache__/
 *.pkl
+*.npz
+*.npy
+
+# Street level's props data as made offline (144 MiB, over GitHub's limit): build.ps1 packs it into
+# Resources/GroundProps.ctpk, which is committed
+CT_MirrorsEdge/Resources/GroundProps.bin
+*.ctpk.tmp
+
+# What the tools write when they run (logs, config, captures, reports) and crash dumps
+**/Cinematic Tools/
+*.log
+*.dmp
+
+# Claude Code's local settings
+.claude/
 
 # Private research notes, kept outside the repository
 MEC_Reverse_Notes.md

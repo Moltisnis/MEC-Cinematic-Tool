@@ -195,7 +195,8 @@ void gameframe::OnPass(ID3D11DeviceContext* pContext, int from, int to, UINT cou
   if (!pContext)
     return;
   // (the screen-space reflections' place in the frame, diagnostic: SsrOrder.h)
-  ssrorder::NotePass(from, to);
+  if (util::DiagnosticsOn())
+    ssrorder::NotePass(from, to);
   if (to == PassMain && from != PassMain)
   {
     // A G-buffer pass begins: the frame's first gives its targets and depth
@@ -241,7 +242,7 @@ void gameframe::OnPass(ID3D11DeviceContext* pContext, int from, int to, UINT cou
         }
       }
     }
-    else if (!g_LoggedSeveral)
+    else if (!g_LoggedSeveral && util::DiagnosticsOn())
     {
       g_LoggedSeveral = true;
       util::log::Write("Snow (diagnostic): the game drew a second G-buffer pass in a frame (the frame's first is the one used)");
@@ -545,7 +546,7 @@ void gameframe::FrameEnd()
   else
     g_FramesWithout = 0;
   // (a G-buffer pass with no lit pass after it: no copies that frame)
-  if (g_Hooked && g_MainPasses > 0 && !g_LitSeen && g_Wanted && !g_LoggedNoLit)
+  if (g_Hooked && g_MainPasses > 0 && !g_LitSeen && g_Wanted && !g_LoggedNoLit && util::DiagnosticsOn())
   {
     g_LoggedNoLit = true;
     util::log::Write("Snow (diagnostic): a frame had a G-buffer pass and no lit pass after it: the G-buffer wasn't copied in it");

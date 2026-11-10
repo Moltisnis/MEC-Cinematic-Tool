@@ -428,6 +428,8 @@ namespace
 
   long long Ticks()
   {
+    if (!util::DiagnosticsOn())  // only the recording cost (diagnostics) reads the clock
+      return 0;
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
     return t.QuadPart;
@@ -476,6 +478,8 @@ namespace
   // The end of a frame of Update: recording before and after it, its whole time
   void EndRecordFrame(bool wasRecording, bool isRecording, long long whole)
   {
+    if (!util::DiagnosticsOn())
+      return;
     RecordCost& c = g_RecordCost;
     if (wasRecording && isRecording)
     {
@@ -3096,8 +3100,12 @@ void FaithReplay::StartRecording()
   replay_gamedraws::SetWorldCapture(true);
   replay_gamedraws::SetTrackCapture(true);
   m_WorldScanAt = -1.0;
-  // Diagnostic (temporary): the game's draws described while it records (ReplayDrawLog.h)
-  replay_drawlog::Start();
+  // Diagnostic (temporary): the game's draws described while it records (ReplayDrawLog.h).
+  // Off: only the replay's draw hooks it brings in (the captures above need them)
+  if (util::DiagnosticsOn())
+    replay_drawlog::Start();
+  else
+    replay_shapes::WantDrawHooks();
   ClearPeople();
   g_Hierarchies.clear();   // a manager's memory may be another skeleton's since
   g_Unbinds.clear();
@@ -4876,6 +4884,7 @@ void FaithReplay::AdoptGameDraws()
       // streching"; the cause isn't known): the part's bones whose skeleton
       // bone, as drawn now, didn't fit this frame of it, and its header rows
       // (drawn as kept from its first frame) that weren't the same in this one
+      if (util::DiagnosticsOn())
       {
         static int s_fitLogs = 0, s_headerLogs = 0;
         int misfit = 0;
@@ -5635,6 +5644,8 @@ namespace
 
   bool WantPoseLog(__int64 entity)
   {
+    if (!util::DiagnosticsOn())
+      return false;
     double now = GetTickCount64() / 1000.0;
     auto& l = g_PoseLogs[entity];
     if (l.first >= PoseLogsEach || (l.first && now - l.second < PoseLogSeconds))
@@ -5755,7 +5766,7 @@ void FaithReplay::DrawPeopleWithGameDraws(double time)
     int drawn = 0, bad = 0, minMap = (1 << 30), maxMap = 0;
     float const* firstBone = nullptr;
     float where[3];
-    bool whereKnown = PersonPlaceAt(*person, time, where);
+    bool whereKnown = util::DiagnosticsOn() && PersonPlaceAt(*person, time, where);   // only the far-bone line uses it
     for (auto const& d : person->GameDraws)
     {
       replay_gamedraws::PersonDraw out{ d.Id, d.HeaderRows };
@@ -6155,7 +6166,8 @@ void FaithReplay::RecordPeople(__int64 soldier, float const* faith, double time)
       person->RootWorld.clear();
       person->RootWorld.shrink_to_fit();
     }
-    NoteRecordedBody(*person, slot, info, time);
+    if (util::DiagnosticsOn())
+      NoteRecordedBody(*person, slot, info, time);
     // Its skeleton, for the game's own draws of it (stage 2, AdoptGameDraws):
     // its pose manager, and its matrices' fixed transforms (looked for until
     // read; a torn read fails ReadUnbind's checks and is tried again)
@@ -6226,8 +6238,8 @@ void FaithReplay::RecordPeople(__int64 soldier, float const* faith, double time)
     // Diagnostic: its pose as the replay makes it against the game's (see
     // CheckRecordedPose; the first 1 s in: the ghost runners of 2026-11-03's
     // test were there 1.9 - 2.6 s, never checked at 3 s)
-    if (person->BodyOffset == CharacterBodyOffset && person->PoseChecks < 2 && person->Times.size() > 1 &&
-        time - person->Times.front() >= (person->PoseChecks ? 20.0 : 1.0))
+    if (util::DiagnosticsOn() && person->BodyOffset == CharacterBodyOffset && person->PoseChecks < 2 &&
+        person->Times.size() > 1 && time - person->Times.front() >= (person->PoseChecks ? 20.0 : 1.0))
       CheckRecordedPose(*person, slot, time);
     // A gun's or drone's whole world pose with each stored frame (stage 2b, see AppendWorld)
     if (person->BodyOffset == ActorBodyOffset && person->WorldOk)
@@ -6256,7 +6268,7 @@ void FaithReplay::PlayPeople(double time, __int64 soldier, float const* faith)
   // Guns still held from the playback before: let go first, held again below if they're away
   ReleaseGunTail(true);
   int shown = 0, gone = 0, noSlot = 0;
-  bool diagnose = time - m_PeopleLogAt >= 2.0 || time < m_PeopleLogAt;
+  bool diagnose = util::DiagnosticsOn() && (time - m_PeopleLogAt >= 2.0 || time < m_PeopleLogAt);
   if (diagnose)
   {
     m_PeopleLogAt = time;
@@ -6419,7 +6431,8 @@ void FaithReplay::PlayPeople(double time, __int64 soldier, float const* faith)
     }
     else if (person->BodyOffset == ActorBodyOffset && person->ActorBeforeOk && MoveActor(*person, pOverride->Bones))
     {
-      CheckActor(*person, slot, pOverride->Bones);
+      if (util::DiagnosticsOn())
+        CheckActor(*person, slot, pOverride->Bones);
       droneMoved = IsDrone(*person);
     }
     // The game doesn't update it: the replay writes it itself (the override
@@ -6598,7 +6611,8 @@ void FaithReplay::PlayPeople(double time, __int64 soldier, float const* faith)
     {
       strncpy_s(m_Message, m_WorldMessage, _TRUNCATE);
       // Diagnostic (temporary): which spawners could make stand-ins
-      util::hooks::LogSpawners("the recorded people aren't in the level");
+      if (util::DiagnosticsOn())
+        util::hooks::LogSpawners("the recorded people aren't in the level");
     }
     else if (shown > 0 && !strcmp(m_Message, m_WorldMessage))
       m_Message[0] = 0;   // found again since (see ClaimForGone)
@@ -6857,8 +6871,8 @@ void FaithReplay::ReleaseGunTail(bool now)
       __int64 animatable = 0;
       PoseSlot slot{};
       RenderEntry render;
-      if (there && FindCharacterPose(gun.Entity, animatable, slot, ActorBodyOffset) && animatable == gun.Animatable &&
-          ReadRenderEntry(slot, render) && render.Buffer[1] >= 0x10000)
+      if (util::DiagnosticsOn() && there && FindCharacterPose(gun.Entity, animatable, slot, ActorBodyOffset) &&
+          animatable == gun.Animatable && ReadRenderEntry(slot, render) && render.Buffer[1] >= 0x10000)
         util::log::Write("Replay:   gun 0x%I64X let go: its render-side bone 1 at %.2f %.2f %.2f, %.2f m from where the game had it",
           gun.Entity, render.Root[1][8], render.Root[1][9], render.Root[1][10], Distance3(&render.Root[1][8], gun.Real));
       util::hooks::HoldBodyUpdate(gun.Body, false);
@@ -7646,14 +7660,17 @@ void FaithReplay::UpdateDashRecording(bool faithFound)
       continue;
     bool again = m_DashLastTick[e.Kind] && e.Tick - m_DashLastTick[e.Kind] < SameMessageMs;
     m_DashLastTick[e.Kind] = e.Tick;
-    char fields[96];
-    if (e.Kind == game_messages::DashFinished)
-      sprintf_s(fields, "%08X %08X %08X %08X %08X %08X %08X %08X", e.Fields[0], e.Fields[1], e.Fields[2], e.Fields[3],
-        e.Fields[4], e.Fields[5], e.Fields[6], e.Fields[7]);
-    else
-      sprintf_s(fields, "%08X %08X", e.Fields[0], e.Fields[1]);
-    util::log::Write("Replay: the game's Dash %s message (on its %s message manager%s; its fields from + 0x48: %s)",
-      game_messages::KindName(e.Kind), e.Manager == 1 ? "client's" : "server's", again ? ", the same one again" : "", fields);
+    if (util::DiagnosticsOn())
+    {
+      char fields[96];
+      if (e.Kind == game_messages::DashFinished)
+        sprintf_s(fields, "%08X %08X %08X %08X %08X %08X %08X %08X", e.Fields[0], e.Fields[1], e.Fields[2], e.Fields[3],
+          e.Fields[4], e.Fields[5], e.Fields[6], e.Fields[7]);
+      else
+        sprintf_s(fields, "%08X %08X", e.Fields[0], e.Fields[1]);
+      util::log::Write("Replay: the game's Dash %s message (on its %s message manager%s; its fields from + 0x48: %s)",
+        game_messages::KindName(e.Kind), e.Manager == 1 ? "client's" : "server's", again ? ", the same one again" : "", fields);
+    }
     if (again || !m_DashAuto)
       continue;
     if (e.Kind == game_messages::DashStarted)

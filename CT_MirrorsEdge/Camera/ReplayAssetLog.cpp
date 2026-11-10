@@ -886,6 +886,8 @@ namespace
 
   void LogMissionCall(char const* what, __int64 entity, char const* args)
   {
+    if (!util::DiagnosticsOn())
+      return;
     {
       std::lock_guard<std::mutex> lock(g_MissionMutex);
       int& each = g_MissionCallCounts[entity];
@@ -905,7 +907,7 @@ namespace
   {
     __int64 result = oMissionCtor(entity, info, data);
     NoteMission(entity);
-    if (IsMission(entity))
+    if (util::DiagnosticsOn() && IsMission(entity))
     {
       char args[64];
       sprintf_s(args, ", data 0x%I64X", data);
@@ -921,7 +923,8 @@ namespace
       LogMissionCall("destroyed", entity, "");
       std::lock_guard<std::mutex> lock(g_MissionMutex);
       g_Missions.erase(std::remove(g_Missions.begin(), g_Missions.end(), entity), g_Missions.end());
-      g_MissionCallCounts.erase(entity);
+      if (util::DiagnosticsOn())   // (the lines' counts)
+        g_MissionCallCounts.erase(entity);
     }
     return oMissionDtor(entity);
   }
@@ -929,18 +932,24 @@ namespace
   __int64 __fastcall hMissionAvail(__int64 entity, char force)
   {
     NoteMission(entity);
-    char args[32];
-    sprintf_s(args, ", force %d", (int)force);
-    LogMissionCall("availability looked at (0x143A77640)", entity, args);
+    if (util::DiagnosticsOn())
+    {
+      char args[32];
+      sprintf_s(args, ", force %d", (int)force);
+      LogMissionCall("availability looked at (0x143A77640)", entity, args);
+    }
     return oMissionAvail(entity, force);
   }
 
   __int64 __fastcall hMissionState(__int64 entity, int c1, int c2, int c3, char force)
   {
     NoteMission(entity);
-    char args[80];
-    sprintf_s(args, ", conditions %d %d %d, force %d", c1, c2, c3, (int)force);
-    LogMissionCall("state update (0x143A76D60)", entity, args);
+    if (util::DiagnosticsOn())
+    {
+      char args[80];
+      sprintf_s(args, ", conditions %d %d %d, force %d", c1, c2, c3, (int)force);
+      LogMissionCall("state update (0x143A76D60)", entity, args);
+    }
     return oMissionState(entity, c1, c2, c3, force);
   }
 
@@ -987,6 +996,8 @@ namespace
 
   void LogStreamCall(char const* which, __int64 entity, int link, char in)
   {
+    if (!util::DiagnosticsOn())
+      return;
     __int64 sub = LinkedEntity(entity, link);
     char kind[96], args[200];
     ClassName(sub, kind, sizeof(kind));
@@ -1041,7 +1052,8 @@ namespace
     made += util::hooks::CreateGameHook("ReplayMissionPreSubLevel", base + MissionPreSubLevelRva, (PVOID)hMissionPreSubLevel,
       (LPVOID*)&oMissionPreSubLevel);
     g_MissionsHooked = made == 7;
-    util::log::Write("Replay missions: the server's mission entities are logged (%d of 7 hooks made)", made);
+    if (util::DiagnosticsOn())
+      util::log::Write("Replay missions: the server's mission entities are logged (%d of 7 hooks made)", made);
   }
 
   // Update's thread, once a second: each mission entity's data and state, in
@@ -1052,6 +1064,9 @@ namespace
     if (now < g_MissionLookAt)
       return;
     g_MissionLookAt = now + MissionLookMs;
+    // Off, only a recording needs them (its missions)
+    if (!util::DiagnosticsOn() && mode != 1)
+      return;
     std::vector<__int64> missions;
     {
       std::lock_guard<std::mutex> lock(g_MissionMutex);
@@ -1059,7 +1074,7 @@ namespace
     }
     if (missions.empty())
       return;
-    if (!g_MissionThreadLogged)
+    if (util::DiagnosticsOn() && !g_MissionThreadLogged)
     {
       g_MissionThreadLogged = true;
       util::log::Write("Replay missions: the replay's own thread (the game thread it runs on) is %u", GetCurrentThreadId());
@@ -1073,8 +1088,6 @@ namespace
       bool read = data && ReadRaw(fields, data + 0x28, sizeof(fields)) && ReadRaw(state, entity + MissionStateFrom, sizeof(state));
       if (!read)
         continue;
-      __int64 flags[3] = { Q(entity + 0x90), Q(entity + 0x98), Q(entity + 0xA0) };
-      __int64 subs[2] = { LinkedEntity(entity, MissionSubLevelLink), LinkedEntity(entity, MissionPreSubLevelLink) };
       char name[160];
       MissionName(entity, name, sizeof(name));
       // A mission running while it records: its recording's mission
@@ -1088,6 +1101,11 @@ namespace
           util::log::Write("Replay missions: '%s' runs while it records (+ 0x11F set): the recording's mission", name);
         }
       }
+      // The rest: the mission's line when it changed (diagnostics only)
+      if (!util::DiagnosticsOn())
+        continue;
+      __int64 flags[3] = { Q(entity + 0x90), Q(entity + 0x98), Q(entity + 0xA0) };
+      __int64 subs[2] = { LinkedEntity(entity, MissionSubLevelLink), LinkedEntity(entity, MissionPreSubLevelLink) };
       std::vector<BYTE> now(state, state + sizeof(state));
       now.insert(now.end(), fields, fields + sizeof(fields));
       now.insert(now.end(), (BYTE const*)subs, (BYTE const*)subs + sizeof(subs));
@@ -2054,6 +2072,21 @@ namespace
 
 void replay_assetlog::Update(int mode, double clock, bool loading)
 {
+  // Diagnostics off: only what the mission's world needs (the replay's mode,
+  // the recording's missions); no scans, file, probes or summaries
+  if (!util::DiagnosticsOn())
+  {
+    if (mode == 1 && g_Mode.load() != 1)
+    {
+      std::lock_guard<std::mutex> lock(g_MissionMutex);
+      g_RecordedMissions.clear();
+    }
+    g_Mode = mode;
+    g_Clock = clock;
+    g_Loading = loading;
+    LookAtMissions(mode, clock);
+    return;
+  }
   int was = g_Mode.load();
   if (mode != was)
   {
@@ -2325,15 +2358,23 @@ void replay_assetlog::Present(ID3D11Device* pDevice)
   if (!g_Hooked)
   {
     g_Hooked = true;
-    void** table = *(void***)pDevice;
-    bool hooked = util::hooks::CreateGameHook("ReplayAssetsCreateTexture2D", (__int64)table[CreateTexture2DSlot], (PVOID)hCreateTexture2D,
-      (LPVOID*)&oCreateTexture2D);
-    if (!hooked)
-      util::log::Warning("Replay assets: the device's CreateTexture2D couldn't be hooked: the textures made while it records aren't noted");
-    HookBundles();
-    HookCreation();
+    // The textures, bundles and creations: noted for the asset log only (diagnostics)
+    if (util::DiagnosticsOn())
+    {
+      void** table = *(void***)pDevice;
+      bool hooked = util::hooks::CreateGameHook("ReplayAssetsCreateTexture2D", (__int64)table[CreateTexture2DSlot], (PVOID)hCreateTexture2D,
+        (LPVOID*)&oCreateTexture2D);
+      if (!hooked)
+        util::log::Warning("Replay assets: the device's CreateTexture2D couldn't be hooked: the textures made while it records aren't noted");
+      HookBundles();
+      HookCreation();
+    }
+    // (the missions' also serve the mission's world)
     HookMissions();
   }
+  // The rest is the asset log's (diagnostics only)
+  if (!util::DiagnosticsOn())
+    return;
   // The frame just drawn, if it was a sampled one: its draws handed over
   replay_gamedraws::CostTimer timer(replay_gamedraws::Cost_AssetPresent);
   int mode = g_Mode.load(std::memory_order_relaxed);
@@ -2377,7 +2418,7 @@ void replay_assetlog::Present(ID3D11Device* pDevice)
 
 void replay_assetlog::OnDraw(ID3D11DeviceContext* pContext, UINT indexCount, UINT startIndex)
 {
-  if (!Sampled())
+  if (!util::DiagnosticsOn() || !Sampled())
     return;
   replay_gamedraws::CostTimer timer(replay_gamedraws::Cost_AssetDraws);
   if (!replay_gamedraws::InMainPass(pContext))
@@ -2402,7 +2443,7 @@ void replay_assetlog::OnDraw(ID3D11DeviceContext* pContext, UINT indexCount, UIN
 void replay_assetlog::OnReplayDraw(ID3D11Buffer* vb, UINT startIndex, UINT indexCount, ID3D11ShaderResourceView* const* views,
   int count)
 {
-  if (!Sampled() || !vb)
+  if (!util::DiagnosticsOn() || !Sampled() || !vb)
     return;
   Note(g_FrameReplay, (__int64)vb, startIndex, indexCount, views, (std::min)(count, ViewSlots));
 }

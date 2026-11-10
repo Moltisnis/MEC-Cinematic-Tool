@@ -1166,6 +1166,8 @@ namespace
   // Once a minute the log lines (whichever hook gets here first; the first one right away)
   void MaybeLog()
   {
+    if (!util::DiagnosticsOn())   // the minute lines: diagnostics only
+      return;
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     long long last = g_LastLog.load(std::memory_order_relaxed);
