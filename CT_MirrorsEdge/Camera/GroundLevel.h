@@ -38,11 +38,11 @@ namespace ground
   // Each frame on the game's thread (the camera hook): Faith's feet, or none
   void Update(bool hasFaith, float const* feet);
   // The Sky City station's collision the tools reshape while Solid street is on (its base block's west face moved to
-  // open the station's lowest floor, the invisible wall at its walkway's doorway shrunk away), back once it's off and
-  // Faith is out of what it opened. Each frame on the game's thread before Update: Faith's feet whether it's on or not,
-  // or none
+  // open the station's lowest floor, the invisible wall at its walkway's doorway shrunk away, the hall's low ceiling
+  // over its east end lifted), back once it's off and Faith is out of what it opened. Each frame on the game's thread
+  // before Update: Faith's feet whether it's on or not, or none. It only decides: the physics flush writes.
   void UpdateSkyCity(bool hasFaith, float const* feet);
-  // What the reshape changed is still changed with Solid street off (Faith is in what it opened): Update has to be
+  // Something the reshape changed is changed (with Solid street off: Faith is in what it opened): Update has to be
   // given her feet, and keeps the ground and props on till it's back
   bool SkyCityHolds();
   // The gates Solid street takes away while it's on (a fence in downtown area 5's passage to the street), back once

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **GAME > Faith in the streets > Solid street: the Sky City hall's low ceiling over its east end lifted** (after the
+  previous entry's install, the user: "Yes, fix it"). Details in Research_Ground_Level_2026-11-01.md section 25.
+  - With Solid street on, skycity_building_01's four convex leaves that made the low ceiling (72657, 72678, 72679,
+    72656, 1.6 - 2.5 m over the hall's floor) are cut at the base block's top: the ceiling there is now the drawn one,
+    about 6.5 m up. What they lose outside the hall lies inside the base block's old box (its kept part or Street
+    level's fill). Two of them get shorter face lists (the game reads the counts fresh each call).
+  - The reshape's writes moved into the physics flush: the camera hook only decides, the client world's (Faith's)
+    flush writes each shape whole in a safe order, and each body on a written root (the client and the effects world
+    share zone 55's collision) is renewed in its own world's flush. Unticked while Faith is where the ceiling was,
+    Solid street stays on (the menu line says so) until she's out of it.
+  - Still with no collision since the base block's cut: the 58-degree leaning wall (into a dark closed space), the
+    shop-front cards (closed rooms behind them) and the pool rims (about 3,800 Street level boxes, held back so the
+    release isn't delayed).
+  - Build 9F8FF7F19543 (11-10 05:10, the ground-level session): INSTALLED (game folder, dist). 551 offline checks on
+    zone 55's real collision bytes pass; two code reviews, every finding fixed. **Not tested in game.**
+
 - **GAME > Faith in the streets > Solid street: the Sky City train station at the Shard's foot** (the user, 2026-11-09:
   "make the shard mall floor solid and remove the death zones from there", then "ok reshape it so the base block doesn't
   have any death zones etc", "make sure that the outside balcony area is solid as well" and "there is also an invisible
