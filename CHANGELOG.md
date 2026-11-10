@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 2.0.0
 
 - **GAME > Faith in the streets > Solid street: the Sky City reshape applies again** (the release check of the user's
   11-10 14:04 run with C31482BE67B7 found it hadn't; the user chose to have 2.0.0 wait for the fix). Details in
