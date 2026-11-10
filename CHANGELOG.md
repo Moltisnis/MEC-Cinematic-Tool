@@ -74,7 +74,22 @@ finding checked against the code before it was fixed.
   text).
 - Build 16B723FA6B2C (usp10.dll 18F8619DD56D; 11-10 23:36, build.ps1 at Idle; no warnings in the changed files;
   check_dll: no user paths, PDB name only, props and roads embedded): **INSTALLED** 23:36 (game folder, dist; the game
-  closed). **Not tested in game.**
+  closed).
+- **Works in game** (11-10 23:44 - 11-11 00:03, 16B723FA6B2C, config.ini without BatchSpreadChunks; the user: "zones now
+  load", "Same with rain", "replay with a dash works now"). From CT.log:
+  - Both sessions: "Room for the whole city on (the config, before any level)" (no renderer when the config was read);
+    23:52:51 "The renderer's first draw batch is full to 1700 chunks, instances go on into the next ones"; no draw
+    batch warnings.
+  - The game's resolution scale (GameRenderSettings + 0x14) follows its menu: "reads 1.000" at 100 % (3840 x 2054),
+    "reads 2.000" at 200 % (7680 x 4108 for 3840 x 2054; also 2560 x 1440 for 1280 x 720 and 3828 x 2344 for
+    1913 x 1172 after window size changes).
+  - Snow at 200 % (23:57:59 - 23:58:25): the G-buffer pass's depth 7680 x 4108, no "no copy of the game's G-buffer"
+    warning (the tester's fallback). Rain at 200 %: "the wet ground written into the game's G-buffer (3828 x 2344 ...)".
+  - Dash replay at 200 %: the markers drawn into the replay's mask (3828 x 2344) and mixed into the 1913 x 1172 picture.
+  - No Shard / Bauble start-up warning. Not seen: the cycling case with the tick off, 150 %.
+  - Old, not from 2.0.1: at the 23:47 quit "The game outgrew its positioned model instance list (524288 -> 0)" (the
+    lists freed at the quit; the exit was normal), and in the replay "0 of the 15 voices of the recorded sounds are
+    there" (the replay's sound code is 2.0.0's).
 - To test: a default config (no BatchSpreadChunks) and "Room for the whole city on" in CT.log at the start; every
   district Always loads the whole city; with the tick off, at the limit no cycling (summaries every 30 s); snow and
   rain at 100 % exactly as before, and at 200 % (and 150 %) with the game's G-buffer ("the game draws its view at 5120
