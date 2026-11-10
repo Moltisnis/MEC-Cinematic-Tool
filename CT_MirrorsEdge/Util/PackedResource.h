@@ -21,7 +21,7 @@ namespace util
   };
 
   // Unpacks a packed blob after checking its header, the stream's own size and the data's SHA-256. cabinet.dll is
-  // loaded only here (from the system folder), so the tools still load where it's missing. On failure, whyNot says
-  // what failed.
+  // taken from the system folder (the DLL imports it anyway, for ReplayStore's saved recordings). On failure, whyNot
+  // says what failed.
   bool UnpackResource(BYTE const* packed, size_t size, UnpackedResource& out, char* whyNot, size_t whyNotSize);
 }

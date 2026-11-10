@@ -44,7 +44,8 @@
     first ':') while off.
   - **GroundProps.bin stored packed:** the DLL embeds Resources\GroundProps.ctpk (LZMS, 19,997,200 bytes for v13's
     151,476,818), unpacked at ground::Init into memory freed when Props::Load returns (Util/PackedResource.cpp: header,
-    stream size and SHA-256 checked; cabinet.dll loaded from the system folder only when needed). tools/pack_resource.py
+    stream size and SHA-256 checked; cabinet.dll taken from the system folder: the DLL imports it anyway, for
+    ReplayStore's saved recordings). tools/pack_resource.py
     packs it; build.ps1 packs again whenever GroundProps.bin is newer; GroundProps.bin is in .gitignore. Offline test of
     the unpack code (scratchpad test_unpack.exe): byte for byte in 1.04 s at Idle; 9 kinds of damaged input refused.
   - **Panini** (Visuals/Panini.hlsl) rewritten from the 2010 paper's equation (cos(phi) solved from x = k sin(phi) /
@@ -60,18 +61,22 @@
 - **GAME > Faith in the streets > Solid street: the Sky City hall's low ceiling over its east end lifted** (after the
   previous entry's install, the user: "Yes, fix it"). Details in Research_Ground_Level_2026-11-01.md section 25.
   - With Solid street on, skycity_building_01's four convex leaves that made the low ceiling (72657, 72678, 72679,
-    72656, 1.6 - 2.5 m over the hall's floor) are cut at the base block's top: the ceiling there is now the drawn one,
-    about 6.5 m up. What they lose outside the hall lies inside the base block's old box (its kept part or Street
-    level's fill). Two of them get shorter face lists (the game reads the counts fresh each call).
+    72656, 1.6 - 2.5 m over the hall's floor) are cut at the base block's top, about 6.7 m over the floor (the drawn
+    45-degree ceiling, from 4.15 m, had no collision behind it until v14's stand-ins, the entry above). What they lose
+    outside the hall lies inside the base block's old box (its kept part or Street level's fill), apart from two
+    slivers of up to 1.2 and 11.8 mm on the building's outer faces. Two of them get shorter face lists (the game reads
+    the counts fresh each call).
   - The reshape's writes moved into the physics flush: the camera hook only decides, the client world's (Faith's)
     flush writes each shape whole in a safe order, and each body on a written root (the client and the effects world
-    share zone 55's collision) is renewed in its own world's flush. Unticked while Faith is where the ceiling was,
+    very likely share zone 55's collision; not checked in game) is renewed in its own world's flush. Unticked while Faith is where the ceiling was,
     Solid street stays on (the menu line says so) until she's out of it.
-  - Still with no collision since the base block's cut: the 58-degree leaning wall (into a dark closed space), the
-    shop-front cards (closed rooms behind them) and the pool rims (about 3,800 Street level boxes, held back so the
-    release isn't delayed).
+  - Still with no collision since the base block's cut (until v14's stand-ins, the entry above): the 58-degree
+    leaning wall (into a dark closed space), the 45-degree ceiling, the shop-front cards (closed rooms behind them),
+    the pool rims and the pillars' feet.
   - Build 9F8FF7F19543 (11-10 05:10, the ground-level session): INSTALLED (game folder, dist). 551 offline checks on
-    zone 55's real collision bytes pass; two code reviews, every finding fixed. **Not tested in game.**
+    zone 55's real collision bytes pass; two code reviews, every finding fixed. **Not tested in game.** In its first
+    run in the game (C31482BE67B7, 11-10 14:04) the reshape didn't apply: all six shapes "aren't as the tools know
+    them (left as they are)"; the stricter whole-object compare is the likely cause (being fixed).
 
 - **GAME > Faith in the streets > Solid street: the Sky City train station at the Shard's foot** (the user, 2026-11-09:
   "make the shard mall floor solid and remove the death zones from there", then "ok reshape it so the base block doesn't
