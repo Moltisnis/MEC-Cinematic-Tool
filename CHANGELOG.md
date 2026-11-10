@@ -8,12 +8,13 @@
   - In that run all six shapes (the base block, the north wedge, the four ceiling leaves) were logged "aren't as the
     tools know them (left as they are)" and nothing was changed. Since the low ceiling entry below (9F8FF7F19543), each
     shape's object was compared whole, from + 0x10 to its end, with the file's image, and the game fills a pointer into
-    each one when it loads the zone: + 0x20, the shape's properties (zone 55's file has exactly one pointer fixup inside
-    each of the six objects, there, to the mass properties stored right after it). The 01:16 build (BDED5CA8E39A),
+    each one when it loads the zone, very likely: + 0x20, the shape's properties (zone 55's file has exactly one pointer
+    fixup inside each of the six objects, there, to the mass properties stored right after it; not read in the
+    game). The 01:16 build (BDED5CA8E39A),
     which compared only the counts and the arrays, had changed the block and the wedge in the game.
   - Now a shape's object is matched by its header's four count / offset pairs (+ 0x30 .. + 0x33, + 0x40 .. + 0x4B) and
-    everything from + 0x50 to its end. Nothing before + 0x30 and none of the header's other bytes is compared or
-    written: the counts are one store each (+ 0x40 8 bytes, + 0x30 and + 0x48 4 bytes; the + 0x38 word isn't written).
+    everything from + 0x50 to its end. Nothing before + 0x30 and none of the header's other bytes is matched on or
+    written (each flush still compares those 48 bytes with the file, for the diagnostics' line only): the counts are one store each (+ 0x40 8 bytes, + 0x30 and + 0x48 4 bytes; the + 0x38 word isn't written).
   - The "aren't as the tools know them" line now says how many bodies couldn't be read and which byte first isn't as
     the file has it, at each packfile's place (logged again if a later look first finds that byte). With diagnostics
     on, a line lists the bytes the tools don't go by that the game has changed.
@@ -101,7 +102,9 @@
   - Build 9F8FF7F19543 (11-10 05:10, the ground-level session): INSTALLED (game folder, dist). 551 offline checks on
     zone 55's real collision bytes pass; two code reviews, every finding fixed. **Not tested in game.** In its first
     run in the game (C31482BE67B7, 11-10 14:04) the reshape didn't apply: all six shapes "aren't as the tools know
-    them (left as they are)"; the stricter whole-object compare is the likely cause (being fixed).
+    them (left as they are)"; the stricter whole-object compare was the cause, very likely through the + 0x20 pointer
+    the game fills in at load (not read in the game): fixed in 7BC3594EA5F0, the entry "the Sky City reshape applies
+    again" above.
 
 - **GAME > Faith in the streets > Solid street: the Sky City train station at the Shard's foot** (the user, 2026-11-09:
   "make the shard mall floor solid and remove the death zones from there", then "ok reshape it so the base block doesn't
@@ -119,7 +122,9 @@
     building), the lower terrace's east end, and the shop fronts (flat pictures).
   - Builds: A97DA31332D9 (11-09 23:22, section 23's GroundLevel.cpp and GroundProps.bin v12), then BDED5CA8E39A (11-10
     01:15, build.ps1 at Idle, GroundLevel.cpp, GroundLevel.h, CameraManager.cpp and GroundProps.bin v13, 151,476,818
-    bytes). BDED5CA8E39A INSTALLED 01:16 (game folder, dist, x64\Release). Offline tests pass. **Not tested in game.**
+    bytes). BDED5CA8E39A INSTALLED 01:16 (game folder, dist, x64\Release). Offline tests pass. In game (11-10 03:13):
+    the station's kill box spared Faith, and the base block and the wedge "changed in the game's collision"; the
+    opened hall wasn't walked through.
 
 - **Fixed: GAME > Pose, free-moved bones staying moved after Let go** (the user, 2026-11-09 evening: "free moved bones
   don't return to their original position fix it").

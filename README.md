@@ -75,30 +75,35 @@ Tracks and lights aren't saved when the game closes.
 
 ## Menu tabs
 
-- **CAMERA**: camera on / off, tracks and keyframes, time and HUD (time of day with ±10 min,
-  *Stop the clock*), detail and draw distance, sun shadows, motion blur and camera speeds. *Show
-  Faith's body* shows her third-person body, hair included. *Hear from the camera* makes the game
-  hear from the free camera instead of from Faith. The time of day controls are
-  disabled while MECMP is open, because MECMP syncs the time of day.
+- **CAMERA**: camera on / off; camera tracks and keyframes (shot sequences, the track's path with
+  dots to drag, a preview camera); moves round a focus (orbit, aim, dolly zoom, auto-focus); how the
+  camera moves (heavy camera, fly level, speed by height, camera collision); camera shake; letterbox
+  and guide lines; wide fields of view (Panini); motion blur and camera speeds. *Show Faith's body*
+  shows her third-person body, hair included.
+- **GAME**: game speed; time of day and HUD; Faith (outfit, no arm tattoo, no MagRope, no bag, the
+  gridlink); *Pose*, a pose editor; *Faith in the streets* (*Solid street*); detail; level
+  streaming (*Load the world around the camera*, districts, the real Shard from anywhere); sun
+  shadows. The time of day controls are disabled while MECMP is open, because MECMP syncs the time
+  of day.
 - **FOLLOW**: *Follow Faith*, or click something in the *Nearby* list to follow it (the camera goes
   next to it), or aim at it and use *Attach to what the camera looks at*. *Turn with it*, *Tilt with
   it too* and *Smoothing* change how the camera follows. The list's groups (People, Cars, Drones,
   Boats, Trains, Aircraft, Security cameras, Other) come from the names of the game's own models.
   Trains and aircraft are listed wherever they are, and a security camera puts the camera at its
   lens.
-- **VISUALS**: open an effect and tick *Change this effect* to override it. *Fog* has a
-  *Greenscreen*: everything farther from the camera than a distance turns one flat color, to key
-  out when editing.
-- **LIGHTS**: add sphere and spot lights at the camera. Use *Forget all lights* after loading
-  another level or checkpoint.
-- **REPLAY** (experimental): record Faith's run, then play it back on her body (all of it, not a
-  ghost) while the camera films it again; it can start and stop with the camera track.
-- **MISC**: text size, mouse cursor, hotkeys, console window.
+- **VISUALS**: rain, snow and a green screen; the game's effects (open one and tick *Change this
+  effect* to override it: depth of field, filmic effects, colour correction, outdoor light and
+  more); *Lights* (sphere and spot lights, with dots to drag on the picture); *Images* (your own
+  pictures standing in the world).
+- **REPLAY** (experimental): record Faith's run and what's around her, then play it back on her
+  body (all of it, not a ghost) while the camera films it again; it can start and stop with the
+  camera track. Recordings are saved, and Dashes record themselves.
+- **MISC**: performance, text size, mouse cursor, hotkeys, console window.
 
 ## Loading the world around the camera
 
 The game only streams the city in around Faith, so a far-away camera sees missing props. *Load
-the world around the camera* (CAMERA → *Detail and draw distance*) also loads it around the free
+the world around the camera* (GAME → *Level streaming*) also loads it around the free
 camera, ahead of it and along the selected track:
 
 - *Stream distance* loads up to 600 m all round, or 1000 m with *Only where the camera looks*.

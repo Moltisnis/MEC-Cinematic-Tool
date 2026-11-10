@@ -12,7 +12,7 @@ The tools include these libraries in source form, and the DLLs include them comp
 The project itself is based on [CinematicTools](https://github.com/Hattiwatti/CinematicTools) by
 Hattiwatti (template commit in `CT_MirrorsEdge/TEMPLATE_COMMIT.txt`).
 
-The Panini projection (VISUALS) is written from the paper "Pannini: A New Projection for Rendering
+The Panini projection (CAMERA > Wide fields of view) is written from the paper "Pannini: A New Projection for Rendering
 Wide Angle Perspective Images" by Sharpless, Postle and German (2010).
 
 ## MinHook
