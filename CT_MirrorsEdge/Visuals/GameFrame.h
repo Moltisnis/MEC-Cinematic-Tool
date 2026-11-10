@@ -46,6 +46,11 @@ namespace gameframe
   // none of them cleared for a while, another one shaped like the frame
   // was): not learned again, a new one is
   void ForgetSceneDepths();
+  // Render thread: the depth targets known so far let go of (not given up
+  // on: they're learned again when seen), when the game's render size the
+  // passes are told apart at changes (ReplayGameDraws, LearnRenderSize): a
+  // depth of the old size (a pass of a menu, say) isn't the scene's any more
+  void ResetSceneDepths();
 
   struct Frame
   {

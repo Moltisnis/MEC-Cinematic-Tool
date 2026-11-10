@@ -1,5 +1,86 @@
 # Changelog
 
+## Version 2.0.1
+
+Fixes for the first outside tester's report on 2.0.0 (2026-11-10, their CT.log: "zone loading doesn't load the whole
+map" and "snow is applied weirdly"; the user: "Yes, fix all four"). Made by a workflow (an implementer, a skeptical
+reviewer and a fixer per area), then three more read-only reviews (the whole diff, then the changes after each); every
+finding checked against the code before it was fixed.
+
+- **GAME > Level streaming > Room for the whole city, on by default** (the tester's "doesn't load the whole map").
+  - Cause: the renderer's draw batch spread (`[Misc] BatchSpreadChunks`) was a hidden test setting, 0 by default; the
+    developer's own config.ini had 1700, so the whole city only ever loaded there. Without it one batch has room for
+    111872 instances, and the tester's log was at its limit all along.
+  - Now 1700 by default (written to config.ini only when it differs) and a menu tick, first under Level streaming. It's
+    switched only with no renderer there, or while in every renderer category 0 has only ever used its first batch,
+    that batch has never run past 1748 chunks (its fill bytes past 1748 land on the second batch's first 300 bytes:
+    checked for 0) and it is 128 chunks or more short of where the add's picking changes (the spread's chunks, and
+    1748): then it's as if the renderer had had the setting from its start. Switched off while an add raced the switch
+    into the next batch, the hook keeps that category spread (g_BatchSpreadLast). 2.0.0 switched it at config time with
+    no check. The tools check when the config is read and again from the batch scan; not before the config has been
+    read (the camera update runs earlier). The log says when it's switched ("Room for the whole city on/off (...)").
+  - The add counts as hooked only when its hook was made and enabled (MinHook gives the original's pointer before it
+    enables): a failed enable leaves the spread off instead of counting room the game doesn't use.
+  - The draw batch's room is per category (category 0 9 x 1700 x 64 with the spread, the others 1748 x 64); with the
+    spread off the numbers are 2.0.0's. A new per-batch guard takes zones away from 86 % / 92 % of a batch's 2048
+    chunk pointers (where the game crashes), so it acts before the overflow guard. With the spread on the renderer's
+    instance list (1000000) is the limit reached first: the menu and the log then name it.
+  - Without the wider batch handle or the add's hook: "Room for the whole city: not with this game build" and the real
+    room (55936 without the wider handle).
+- **The streaming no longer cycles at the limit** (the tester's log: 80 draw batch warnings from 19:01:09 to 19:10:46,
+  38 of them "taken away", half of them 2 s or less apart: the same zones loading and unloading).
+  - A zone point taken away for room is held out, by its index, for every streamer: 10 s, twice as long when taken
+    away again within 60 s of coming back, at most 120 s, and (not the camera's own two) until the fullest limit is
+    under 0.875 of its hold-back level (the draw batch under 70 %) with nothing at any level. The camera's own point
+    and the one ahead come back as in 2.0.0 (nothing at any level) once their time is up and the counts have settled.
+    While the most important missing point is held out nothing after it goes in. A hold is forgotten when its point
+    stands for another place (100 m; the camera's own 1000 m), at a level load (a guess: renderer objects changed),
+    and, at most once a minute a point, when a point taken away behind the camera comes into view (turned round at a
+    limit, the view would otherwise stay unloaded; in view one behind is taken away for it a second, as in 2.0.0).
+  - From the draw batch's and the meshes' settle levels on (where each streamer already waited in 2.0.0), all
+    streamers share one gate: one zone point at a time, once every zone asked for has loaded (or 10 s of waiting, then
+    the wait starts again), the streamer that has waited longest first. Not from the model instance lists' or the
+    renderer memory's: with the whole city loaded those stood at 63 % and 51 %.
+  - Removal order: the camera's extra zones and the Always districts first, the rain's zones and the real Shard's only
+    on the urgent path, the camera's own two last. The renderer's instance memory (never goes down within a level) is
+    left out of the release level.
+  - Batch warnings: one at the first rise, then a summary at most every 30 s.
+  - The Districts list shows whenever a district is Always or Never (or the real Shard is on), with Load the world
+    around the camera off too.
+- **Snow, the wet look and the replay's passes at any resolution scale** (the tester's "snow is applied weirdly": they
+  render at 5120 x 2880 into a 2560 x 1440 frame).
+  - Cause: the game's G-buffer pass was only recognised by a depth the swap chain's size, so at another resolution
+    scale it was never seen: the snow fell back to depth facing and the picture's light ("no copy of the game's
+    G-buffer for 10 s"), the ice on water to the old camera.
+  - Now the render size is learned at Present: the frame's size at once (100 %, as before), another window-shaped
+    G-buffer pass's size after 30 frames in a row, and not while the game's resolution scale (GameRenderSettings +
+    0x14, the original tools' resolutionScale; whether it follows the game's menu setting isn't checked yet) reads
+    100 %. Logged: "Replay: the game draws its view at W x H for the w x h frame (N % ...; the game's own resolution
+    scale reads X)", or "... isn't taken for the game's view: its own resolution scale reads 1.000" when refused. Only
+    the targets' format verdict is cached, the depth's size is read each time.
+  - The lit, decal, half-size and runner's vision passes are told apart at that size; GameFrame's scene depths are
+    learned again when it changes; WetLook reads the G-buffer copies at depth texels (neighbours whole texels away);
+    the replay's runner's vision mask is render-sized and the mix (RunnersVision.hlsl) reads it scaled, so the Dash
+    markers show at other scales too.
+  - Headers recompiled with fxc 10.0.22000.0 at Idle (WetLookPs, WetLookRainPs, WetLookSnowGroundPs, WetLookQueryPs,
+    GbufferWetPs, RunnersVisionPs); the untouched sources recompile byte for byte to the committed headers. At 100 %
+    the shader math reduces to 2.0.0's.
+- **Start-up warning gone**: "The Shard and the Bauble: the camera triggers' code isn't what the tools know" was a
+  start-up race (the camera update ran before the check). The check's state is now three-way (not checked yet /
+  failed / hooked) and set after the hook is made; a real failure gives one warning naming the menu's Unbroken Shard
+  and Bauble and Shard office blinds.
+- Log text: "snowy city look taken back" (was always "rainy"), spot sounds "(the camera off)" (was "-1 m away"), the
+  Bauble's trigger line; README's level streaming section brought up to date (the old 70 % / Hold back / Unrestricted
+  text).
+- Build 16B723FA6B2C (usp10.dll 18F8619DD56D; 11-10 23:36, build.ps1 at Idle; no warnings in the changed files;
+  check_dll: no user paths, PDB name only, props and roads embedded): **INSTALLED** 23:36 (game folder, dist; the game
+  closed). **Not tested in game.**
+- To test: a default config (no BatchSpreadChunks) and "Room for the whole city on" in CT.log at the start; every
+  district Always loads the whole city; with the tick off, at the limit no cycling (summaries every 30 s); snow and
+  rain at 100 % exactly as before, and at 200 % (and 150 %) with the game's G-buffer ("the game draws its view at 5120
+  x 2880 ... reads 2.000"; if it says "isn't taken ... reads 1.000" the scale field doesn't follow the setting); the Dash
+  markers in a replay at 200 %; no Shard start-up warning.
+
 ## Version 2.0.0
 
 - **GAME > Faith in the streets > Solid street: the Sky City reshape applies again** (the release check of the user's

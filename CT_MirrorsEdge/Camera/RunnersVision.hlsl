@@ -22,10 +22,11 @@ cbuffer RunnersVisionParams : register(b0)
   float4 g_Color;     // rgb: runnersVisionColor (OverlayColor)
   float4 g_Amounts;   // x: preBlendAmount (AlphaBlendAmount), y: postAddAmount (AdditiveBlendAmount),
                       // z: 1 when the frame's views are sRGB ones (read and written linear)
+  float4 g_MaskScale; // xy: the mask's size over the frame's (the game's render size: 1 at a resolution scale of 100 %)
 };
 
 Texture2D g_Frame : register(t0);          // a copy of the finished frame
-Texture2D<float> g_Mask : register(t1);    // the replay's mask, the frame's size
+Texture2D<float> g_Mask : register(t1);    // the replay's mask, the game's render size (the frame's at 100 %)
 
 struct VsOut
 {
@@ -60,7 +61,8 @@ float4 PsMain(VsOut i) : SV_TARGET
 {
   int3 at = int3(int2(i.Position.xy), 0);
   float4 frame = g_Frame.Load(at);
-  float m = g_Mask.Load(at);
+  // (the mask's texel the pixel's centre falls in: the pixel itself at 100 %)
+  float m = g_Mask.Load(int3(int2(i.Position.xy * g_MaskScale.xy), 0));
   // Nothing of the layer here: the frame as it was, exactly
   if (m <= 0.0)
     return frame;

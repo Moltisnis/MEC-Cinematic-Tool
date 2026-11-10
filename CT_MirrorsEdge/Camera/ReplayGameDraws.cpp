@@ -702,10 +702,58 @@ namespace
   ID3D11DeviceContext* g_Immediate = nullptr;
   ComPtr<ID3D11DeviceContext1> g_Immediate1;
   UINT g_FrameWidth = 0, g_FrameHeight = 0;
+  // The size the game draws its main view at (its G-buffer pass's depth), the
+  // frame's own at a resolution scale of 100 %. An outside tester's CT.log of
+  // 2026-11-10 had the scene's depth at 5120 x 2880 for a 2560 x 1440 frame
+  // (the game's resolution scale at 200 %, by the sizes) and "no copy of the
+  // game's G-buffer for 10 s while snow lies": the G-buffer pass was told
+  // apart only by a depth the frame's size, so it was never seen. By the
+  // code, not in the log: it was taken for a reflection's (Pass_Env), the
+  // wet ground in the game's lighting, Dogen's lamps' glow and the replay's
+  // draws in the game's passes couldn't be drawn, and half-size passes (the
+  // frame's size at 200 %, if they're half the render size as at 100 %)
+  // would be taken for lit ones. Now learned from the frame's G-buffer
+  // passes (see IsMainGbuffer and LearnRenderSize): one with a depth the
+  // frame's size, as before, at once; else the biggest one shaped like the
+  // frame, once RenderSizeFrames frames in a row had it (a frame with no
+  // G-buffer pass breaks the run), and not while the game's own resolution
+  // scale reads 1 (100 %). 0 until it's known (the frame's size is taken
+  // then).
+  // The lit, decal and runner's vision passes are told apart by a depth that
+  // size, the half-size ones by half of it. Reset when the frame's size
+  // changes (Present).
+  UINT g_RenderWidth = 0, g_RenderHeight = 0;
+  // This frame's G-buffer passes (their 4 targets in their formats): one had
+  // a depth the frame's size; the biggest one shaped like the frame
+  bool g_GbufferAtFrameSize = false;
+  UINT g_GbufferBestWidth = 0, g_GbufferBestHeight = 0;
+  // Another size than the one known, and how many frames in a row had it
+  UINT g_RenderNextWidth = 0, g_RenderNextHeight = 0;
+  int g_RenderNextFrames = 0;
+  int g_RenderSizeLogs = 0;
+  const int RenderSizeFrames = 30;
+  const int MostRenderSizeLogs = 8;
+  // Shaped like the frame: its sides' ratio within this of the frame's, and
+  // at least this much of the frame's area (GreenPlane.cpp's scene depth
+  // test: the reflections' faces, 512 x 512, are square and stay out)
+  const float RenderAspectSlack = 0.03f;
+  const float RenderMinArea = 0.2f;
+  // The game's own resolution scale (GameRenderSettings + 0x14, the research
+  // notes' structure offsets; the original tools' resolutionScale): for the
+  // log's line, and while it reads 1 (100 %) no size but the frame's is
+  // taken (see LearnRenderSize). Whether it follows the game's menu setting
+  // isn't checked yet: the log's line shows what it reads.
+  const int GameRenderSettingsScaleOffset = 0x14;
+  int g_RenderSizeRefusedLogs = 0;
+  const int MostRenderSizeRefusedLogs = 4;
   unsigned g_Frame = 0;
   bool g_InMain = false;
   bool g_Injected = false;          // this frame
   bool g_ViewCopied = false;        // this frame
+  // targets[0], depth -> its 4 targets in the G-buffer's formats (the depth's
+  // size is read each time: the game makes its targets again at another
+  // resolution scale, maybe at the same addresses, and a size kept here would
+  // keep the old render size; see IsMainGbuffer)
   std::map<std::pair<__int64, __int64>, bool> g_TargetKinds;
   std::vector<std::shared_ptr<Recipe>> g_Pending;   // kept this pass
   __int64 g_PendingCamera = 0;
@@ -972,7 +1020,50 @@ namespace
     return ((long long)shape << 16) | (long long)(section & 0xFFFF);
   }
 
-  // The main view's G-buffer: its 4 targets in their formats and a depth target the frame's size
+  // A depth target's texture's size (false: not a 2D texture)
+  bool DepthSize(ID3D11DepthStencilView* depth, UINT& width, UINT& height)
+  {
+    width = height = 0;
+    if (!depth)
+      return false;
+    ComPtr<ID3D11Resource> res;
+    depth->GetResource(res.GetAddressOf());
+    ComPtr<ID3D11Texture2D> tex;
+    if (!res || FAILED(res.As(&tex)) || !tex)
+      return false;
+    D3D11_TEXTURE2D_DESC td{};
+    tex->GetDesc(&td);
+    width = td.Width;
+    height = td.Height;
+    return true;
+  }
+
+  // A size shaped like the frame (see RenderAspectSlack)
+  bool RenderShaped(UINT width, UINT height)
+  {
+    if (!g_FrameWidth || !g_FrameHeight || !width || !height)
+      return false;
+    float frameAspect = (float)g_FrameWidth / (float)g_FrameHeight;
+    float aspect = (float)width / (float)height;
+    return fabsf(aspect - frameAspect) <= frameAspect * RenderAspectSlack &&
+      (float)width * (float)height >= RenderMinArea * (float)g_FrameWidth * (float)g_FrameHeight;
+  }
+
+  // The game's render size (see g_RenderWidth): the frame's until it's known
+  UINT RenderWidth()
+  {
+    return g_RenderWidth ? g_RenderWidth : g_FrameWidth;
+  }
+
+  UINT RenderHeight()
+  {
+    return g_RenderWidth ? g_RenderHeight : g_FrameHeight;
+  }
+
+  // The main view's G-buffer: its 4 targets in their formats and a depth
+  // target the frame's size (the resolution scale at 100 %, as before), else
+  // the game's render size once it's known (see g_RenderWidth). Every such
+  // pass is noted for the frame's render size (LearnRenderSize).
   bool IsMainGbuffer(UINT count, ID3D11RenderTargetView* const* targets, ID3D11DepthStencilView* depth)
   {
     if (count < 4 || !targets || !depth || !g_FrameWidth)
@@ -981,64 +1072,179 @@ namespace
       if ((i < 4) != (targets[i] != nullptr))
         return false;
     auto key = std::make_pair((__int64)targets[0], (__int64)depth);
+    // (the formats kept by the targets, the depth's size read now: only for
+    // binds of the G-buffer's 4 formats, the main pass, the reflections'
+    // faces and the game's later G-buffer passes, see g_TargetKinds)
+    bool formats;
     auto it = g_TargetKinds.find(key);
     if (it != g_TargetKinds.end())
-      return it->second;
-    bool main = true;
-    for (int i = 0; i < 4 && main; ++i)
+      formats = it->second;
+    else
     {
-      D3D11_RENDER_TARGET_VIEW_DESC d{};
-      targets[i]->GetDesc(&d);
-      main = d.Format == GbufferFormats[i];
-    }
-    if (main)
-    {
-      ComPtr<ID3D11Resource> res;
-      depth->GetResource(res.GetAddressOf());
-      ComPtr<ID3D11Texture2D> tex;
-      D3D11_TEXTURE2D_DESC td{};
-      main = res && SUCCEEDED(res.As(&tex)) && tex;
-      if (main)
+      formats = true;
+      for (int i = 0; i < 4 && formats; ++i)
       {
-        tex->GetDesc(&td);
-        main = td.Width == g_FrameWidth && td.Height == g_FrameHeight;
+        D3D11_RENDER_TARGET_VIEW_DESC d{};
+        targets[i]->GetDesc(&d);
+        formats = d.Format == GbufferFormats[i];
       }
+      if (g_TargetKinds.size() > 256)
+        g_TargetKinds.clear();
+      g_TargetKinds[key] = formats;
     }
-    if (g_TargetKinds.size() > 256)
-      g_TargetKinds.clear();
-    g_TargetKinds[key] = main;
-    return main;
+    UINT width = 0, height = 0;
+    if (!formats || !DepthSize(depth, width, height) || !width || !height)
+      return false;
+    if (width == g_FrameWidth && height == g_FrameHeight)
+    {
+      g_GbufferAtFrameSize = true;
+      return true;
+    }
+    if (!RenderShaped(width, height))
+      return false;
+    if ((unsigned long long)width * height > (unsigned long long)g_GbufferBestWidth * g_GbufferBestHeight)
+    {
+      g_GbufferBestWidth = width;
+      g_GbufferBestHeight = height;
+    }
+    return width == g_RenderWidth && height == g_RenderHeight;
   }
 
-  // The depth target the frame's size (the main view's)
+  // The depth target the game's render size (the main view's; the frame's
+  // size until that's known, see g_RenderWidth)
   bool FrameDepth(ID3D11DepthStencilView* depth)
   {
-    if (!depth || !g_FrameWidth)
+    UINT width, height;
+    if (!g_FrameWidth || !DepthSize(depth, width, height))
       return false;
-    ComPtr<ID3D11Resource> res;
-    depth->GetResource(res.GetAddressOf());
-    ComPtr<ID3D11Texture2D> tex;
-    D3D11_TEXTURE2D_DESC td{};
-    if (!res || FAILED(res.As(&tex)) || !tex)
-      return false;
-    tex->GetDesc(&td);
-    return td.Width == g_FrameWidth && td.Height == g_FrameHeight;
+    return width == RenderWidth() && height == RenderHeight();
   }
 
-  // The depth target half the frame's size (rounded either way)
+  // The depth target half the game's render size (rounded either way)
   bool HalfDepth(ID3D11DepthStencilView* depth)
   {
-    if (!depth || !g_FrameWidth)
+    UINT width, height;
+    if (!g_FrameWidth || !DepthSize(depth, width, height))
       return false;
-    ComPtr<ID3D11Resource> res;
-    depth->GetResource(res.GetAddressOf());
-    ComPtr<ID3D11Texture2D> tex;
-    D3D11_TEXTURE2D_DESC td{};
-    if (!res || FAILED(res.As(&tex)) || !tex)
-      return false;
-    tex->GetDesc(&td);
-    return (td.Width == g_FrameWidth / 2 || td.Width == (g_FrameWidth + 1) / 2) &&
-      (td.Height == g_FrameHeight / 2 || td.Height == (g_FrameHeight + 1) / 2);
+    UINT w = RenderWidth(), h = RenderHeight();
+    return (width == w / 2 || width == (w + 1) / 2) && (height == h / 2 || height == (h + 1) / 2);
+  }
+
+  // The game's own resolution scale (see GameRenderSettingsScaleOffset): -1
+  // where it can't be read
+  float ReadResolutionScale(__int64 settingsAt)
+  {
+    __try
+    {
+      __int64 settings = *(__int64 const*)settingsAt;
+      if (settings < 0x10000)
+        return -1.f;
+      float scale = *(float const*)(settings + GameRenderSettingsScaleOffset);
+      return std::isfinite(scale) ? scale : -1.f;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+      return -1.f;
+    }
+  }
+
+  float GameResolutionScale()
+  {
+    static __int64 s_settingsAt = util::offsets::GetOffset("OFFSET_GAMERENDERSETTINGS");
+    return s_settingsAt ? ReadResolutionScale(s_settingsAt) : -1.f;
+  }
+
+  // At Present, from the frame's G-buffer passes (IsMainGbuffer): the game's
+  // render size. Each frame chooses the frame's own size when one of them had
+  // it, else the biggest one shaped like the frame; a frame without any
+  // chooses nothing and breaks the run. The frame's own size is taken at once
+  // (the resolution scale at 100 %, as before); another once
+  // RenderSizeFrames frames in a row chose it, so it doesn't go back and
+  // forth from frame to frame, and a few frames with some other pass shaped
+  // like the frame (not the main view's) don't move it; and not while the
+  // game's own resolution scale reads 100 %. The passes' kinds are then told
+  // again with the new size (g_PassKinds); the size in the log, with the
+  // game's own resolution scale as a check.
+  void LearnRenderSize()
+  {
+    UINT width = 0, height = 0;
+    if (g_GbufferAtFrameSize)
+    {
+      width = g_FrameWidth;
+      height = g_FrameHeight;
+    }
+    else if (g_GbufferBestWidth)
+    {
+      width = g_GbufferBestWidth;
+      height = g_GbufferBestHeight;
+    }
+    g_GbufferAtFrameSize = false;
+    g_GbufferBestWidth = g_GbufferBestHeight = 0;
+    // (a frame with no G-buffer pass breaks the run: a menu's pass drawn now
+    // and then doesn't add up to RenderSizeFrames)
+    if (!width)
+    {
+      g_RenderNextFrames = 0;
+      return;
+    }
+    if (width == g_RenderWidth && height == g_RenderHeight)
+    {
+      g_RenderNextFrames = 0;
+      return;
+    }
+    if (width == g_RenderNextWidth && height == g_RenderNextHeight)
+      ++g_RenderNextFrames;
+    else
+    {
+      g_RenderNextWidth = width;
+      g_RenderNextHeight = height;
+      g_RenderNextFrames = 1;
+    }
+    bool frameSize = width == g_FrameWidth && height == g_FrameHeight;
+    if (!frameSize && g_RenderNextFrames < RenderSizeFrames)
+      return;
+    // Not another size while the game's own resolution scale reads 100 %: a
+    // pass shaped like the frame of another size is then not the main view's
+    // (a menu's, say), and 2.0.0 never took one
+    if (!frameSize)
+    {
+      float scale = GameResolutionScale();
+      if (scale >= 0.f && fabsf(scale - 1.f) < 0.01f)
+      {
+        g_RenderNextFrames = 0;
+        if (g_RenderSizeRefusedLogs < MostRenderSizeRefusedLogs)
+        {
+          ++g_RenderSizeRefusedLogs;
+          util::log::Write("Replay: a G-buffer pass at %u x %u for the %u x %u frame for %d frames in a row isn't taken for the "
+            "game's view: its own resolution scale reads %.3f (100 %%)", width, height, g_FrameWidth, g_FrameHeight,
+            RenderSizeFrames, scale);
+        }
+        return;
+      }
+    }
+    bool hadSize = g_RenderWidth != 0;
+    g_RenderWidth = width;
+    g_RenderHeight = height;
+    g_RenderNextFrames = 0;
+    g_PassKinds.clear();
+    // A size taken before (another resolution scale, or a pass of a menu
+    // shaped like the frame while the main view wasn't drawn): the depth
+    // targets GameFrame learned at it aren't the scene's any more (the game
+    // may use them for something else), so they're learned again
+    if (hadSize)
+      gameframe::ResetSceneDepths();
+    if (g_RenderSizeLogs < MostRenderSizeLogs)
+    {
+      ++g_RenderSizeLogs;
+      float scale = GameResolutionScale();
+      char setting[64] = "couldn't be read";
+      if (scale >= 0.f)
+        sprintf_s(setting, "reads %.3f", scale);
+      util::log::Write("Replay: the game draws its view at %u x %u for the %u x %u frame (%.0f %% of its width; the game's own "
+        "resolution scale %s): its G-buffer, decal, lit, half-size and runner's vision passes are told apart at that size (the "
+        "snow's and the wet look's copies of its G-buffer too)", width, height, g_FrameWidth, g_FrameHeight,
+        100.0 * width / g_FrameWidth, setting);
+    }
   }
 
   // The pass the targets are (see Pass)
@@ -4113,11 +4319,21 @@ namespace
     }
   }
 
+  // The mix (RunnersVision.hlsl) reads the replay's runner's vision mask at
+  // the frame's pixel scaled by the mask's size over the frame's (its
+  // constants' third float4, xy, which ApplyRunnersVision gives: 1 at a
+  // resolution scale of 100 %), so a mask of another size than the frame is
+  // mixed in too (at another scale the markers were never drawn before
+  // 2026-11-10: the G-buffer pass wasn't seen then). False keeps a mask of
+  // another size than the frame from being drawn or mixed in.
+  const bool RvMixScalesMask = true;
   // The runner's vision layer while it plays (see Pass_Rv): the replay's own
-  // mask (R8_UNORM, the frame's size, like the game's), the frame it was
-  // last drawn in (g_Frame then; ApplyRunnersVision mixes it in at that
-  // frame's Present), whether it was tried this frame, and the mix's own
-  // shaders, states and copy of the frame
+  // mask (R8_UNORM, the size of the depth target it's drawn with, the game's
+  // render size, like the game's; until 2026-11-10 the frame's, which can't
+  // be bound with a depth of another size), the frame it was last drawn in
+  // (g_Frame then; ApplyRunnersVision mixes it in at that frame's Present),
+  // whether it was tried this frame, and the mix's own shaders, states and
+  // copy of the frame
   ComPtr<ID3D11Texture2D> g_RvMask;
   ComPtr<ID3D11RenderTargetView> g_RvMaskTarget;
   ComPtr<ID3D11ShaderResourceView> g_RvMaskView;
@@ -4215,7 +4431,16 @@ namespace
       if (depth)
         depth->Release();
     };
-    if (!depth || !FrameDepth(depth))
+    // (the mask the depth's size, the game's render size: a target and a
+    // depth are bound together only at the same size)
+    UINT maskWidth = 0, maskHeight = 0;
+    if (!depth || !FrameDepth(depth) || !DepthSize(depth, maskWidth, maskHeight))
+    {
+      releaseTargets();
+      return;
+    }
+    // (not drawn where it wouldn't be mixed in: see RvMixScalesMask)
+    if (!RvMixScalesMask && (maskWidth != g_FrameWidth || maskHeight != g_FrameHeight))
     {
       releaseTargets();
       return;
@@ -4245,7 +4470,7 @@ namespace
         return;
       }
     }
-    if (!g_RvMask || g_RvMaskWidth != g_FrameWidth || g_RvMaskHeight != g_FrameHeight)
+    if (!g_RvMask || g_RvMaskWidth != maskWidth || g_RvMaskHeight != maskHeight)
     {
       g_RvMaskView.Reset();
       g_RvMaskTarget.Reset();
@@ -4254,8 +4479,8 @@ namespace
       ComPtr<ID3D11Device> device;
       g_Immediate->GetDevice(device.GetAddressOf());
       D3D11_TEXTURE2D_DESC d{};
-      d.Width = g_FrameWidth;
-      d.Height = g_FrameHeight;
+      d.Width = maskWidth;
+      d.Height = maskHeight;
       d.MipLevels = 1;
       d.ArraySize = 1;
       d.Format = DXGI_FORMAT_R8_UNORM;
@@ -4274,12 +4499,12 @@ namespace
         g_RvMask.Reset();
         g_RvFailed = true;
         util::log::Warning("Replay: the runner's vision mask couldn't be made (%u x %u, HRESULT 0x%X): the Dash's markers aren't "
-          "drawn", g_FrameWidth, g_FrameHeight, hr);
+          "drawn", maskWidth, maskHeight, hr);
         releaseTargets();
         return;
       }
-      g_RvMaskWidth = g_FrameWidth;
-      g_RvMaskHeight = g_FrameHeight;
+      g_RvMaskWidth = maskWidth;
+      g_RvMaskHeight = maskHeight;
     }
     // The mask cleared and bound with the game's depth target (the replay's
     // own target changes aren't looked at: t_Drawing)
@@ -4311,7 +4536,7 @@ namespace
   bool MakeRvMix(ID3D11Device* pDevice)
   {
     D3D11_BUFFER_DESC constants{};
-    constants.ByteWidth = 32;
+    constants.ByteWidth = 48;
     constants.Usage = D3D11_USAGE_DYNAMIC;
     constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constants.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -4675,6 +4900,8 @@ void replay_gamedraws::Present(IDXGISwapChain* pSwapChain, ID3D11DeviceContext* 
   g_SawMain = false;
   memset(g_PassCounts, 0, sizeof(g_PassCounts));
   memset(g_InjectedPass, 0, sizeof(g_InjectedPass));
+  // (the game's render size by the frame's G-buffer passes, see g_RenderWidth)
+  LearnRenderSize();
   DXGI_SWAP_CHAIN_DESC desc{};
   if (SUCCEEDED(pSwapChain->GetDesc(&desc)) && (desc.BufferDesc.Width != g_FrameWidth || desc.BufferDesc.Height != g_FrameHeight))
   {
@@ -4683,6 +4910,10 @@ void replay_gamedraws::Present(IDXGISwapChain* pSwapChain, ID3D11DeviceContext* 
     g_TargetKinds.clear();
     // (and the other passes' kinds: told apart by the frame's size too)
     g_PassKinds.clear();
+    // (and the game's render size learned again for the new frame's size)
+    g_RenderWidth = g_RenderHeight = 0;
+    g_RenderNextWidth = g_RenderNextHeight = 0;
+    g_RenderNextFrames = 0;
   }
   // The replay's own drawing's time, now and then while it draws
   if (g_DrawFrames >= TimingLogFrames)
@@ -4731,7 +4962,10 @@ void replay_gamedraws::ApplyRunnersVision(IDXGISwapChain* pSwapChain, ID3D11Devi
     return;
   D3D11_TEXTURE2D_DESC back{};
   pBack->GetDesc(&back);
-  if (back.SampleDesc.Count != 1 || back.ArraySize != 1 || back.Width != g_RvMaskWidth || back.Height != g_RvMaskHeight)
+  // (the mask the game's render size: the frame's at 100 %; another only
+  // once the mix reads it scaled, see RvMixScalesMask)
+  bool maskFrameSized = back.Width == g_RvMaskWidth && back.Height == g_RvMaskHeight;
+  if (back.SampleDesc.Count != 1 || back.ArraySize != 1 || !back.Width || !back.Height || (!maskFrameSized && !RvMixScalesMask))
     return;
   if (!g_RvCopy || back.Width != g_RvCopyDesc.Width || back.Height != g_RvCopyDesc.Height || back.Format != g_RvCopyDesc.Format)
   {
@@ -4775,8 +5009,9 @@ void replay_gamedraws::ApplyRunnersVision(IDXGISwapChain* pSwapChain, ID3D11Devi
   if (FAILED(pContext->Map(g_RvConstants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
     return;
   bool linear = RvLinearViews(viewFormat);
-  float params[8] = { RvOverlayColor[0], RvOverlayColor[1], RvOverlayColor[2], 0.f, RvAlphaBlendAmount, RvAdditiveBlendAmount,
-    linear ? 1.f : 0.f, 0.f };
+  // (the third float4: xy the mask's size over the frame's, 1 at 100 %)
+  float params[12] = { RvOverlayColor[0], RvOverlayColor[1], RvOverlayColor[2], 0.f, RvAlphaBlendAmount, RvAdditiveBlendAmount,
+    linear ? 1.f : 0.f, 0.f, (float)g_RvMaskWidth / (float)back.Width, (float)g_RvMaskHeight / (float)back.Height, 0.f, 0.f };
   memcpy(mapped.pData, params, sizeof(params));
   pContext->Unmap(g_RvConstants.Get(), 0);
 

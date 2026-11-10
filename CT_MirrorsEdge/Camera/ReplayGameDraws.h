@@ -22,7 +22,9 @@ namespace replay_gamedraws
   // Render thread, once (with the replay's draw hooks): the immediate
   // context's render target changes hooked
   void Hook(ID3D11DeviceContext* pImmediate);
-  // Render thread, each Present: the frame's size; captures read back
+  // Render thread, each Present: the frame's size and the game's render size
+  // (its G-buffer pass's, which tells its passes apart: see the .cpp's
+  // g_RenderWidth); captures read back
   void Present(IDXGISwapChain* pSwapChain, ID3D11DeviceContext* pContext);
 
   // The recording's cost by part, in its log line every 10 s (see the .cpp's

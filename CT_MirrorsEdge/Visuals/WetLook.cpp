@@ -4542,10 +4542,15 @@ void wetlook::Apply(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, ID3D11Dev
   // The game's G-buffer copied this frame (GameFrame.h), for the snow's
   // facing on models and its light (WetLook.hlsl's GameSurfaceAt and
   // GameLightAt); without it, as before. Told once if snow has lain 10 s
-  // with no copy (its G-buffer pass not seen: another resolution than the
-  // frame's, say).
+  // with no copy (its G-buffer pass not seen). Only a copy the depth copy's
+  // size is taken: the shader reads it at the depth's texels (DepthTexel),
+  // the game's render size, the frame's at a resolution scale of 100 %
+  // (until 2026-11-10 only one the frame's size was, and it was read at the
+  // frame's pixels: an outside tester's game drew at 5120 x 2880 for a 2560
+  // x 1440 frame, and the snow never had the G-buffer).
   gameframe::Frame gbuffer{};
-  bool haveGbuffer = (snowed || wet) && gameframe::Take(gbuffer) && gbuffer.Width == back.Width && gbuffer.Height == back.Height;
+  bool haveGbuffer = (snowed || wet) && gameframe::Take(gbuffer) && gbuffer.Width == frame.DepthWidth &&
+    gbuffer.Height == frame.DepthHeight;
   // (diagnostic: the camera drawn with against the game's own of the frame)
   if (haveGbuffer && util::DiagnosticsOn())
     gameframe::CheckCamera(pDevice, pContext, t, p, (float)back.Width, (float)back.Height);

@@ -59,6 +59,7 @@ namespace greenplane
     float Transform[16];              // the camera (a LinearTransform, looking along -row 2)
     float Projection[16];             // row vectors
     UINT Width, Height;               // the frame
+    UINT DepthWidth, DepthHeight;     // the copy's (the game's render size: the frame's at a resolution scale of 100 %)
   };
   // Render thread, from the Present hook before Apply: this frame's (the
   // copy taken now unless it was before the game's second clear; Apply then

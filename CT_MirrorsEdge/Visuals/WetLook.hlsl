@@ -201,7 +201,14 @@ Texture2DArray<float> g_HandStamps : register(t5);
 // The game's own G-buffer (GameFrame.h), copied where its G-buffer and decal
 // passes end, while g_GameFrame.x is 1: its normals (xy in one of 6 bases,
 // z the smoothness), its base colour (sRGB, read as linear; a the normal's
-// basis / 6) and its material (y metal, z reflectance), the frame's size
+// basis / 6) and its material (y metal, z reflectance), the depth copy's
+// size (the game's render size: the frame's at a resolution scale of 100 %,
+// twice it each way at 200 %; WetLook.cpp takes no other), so read at the
+// depth's texels (DepthTexel), not the frame's pixels. (2026-11-10: they were
+// read at the frame's pixels and taken only at the frame's size, so an
+// outside tester's game at 5120 x 2880 for a 2560 x 1440 frame had none.)
+// In GbufferWet.hlsl's pass, drawn at the depth's own size, g_Depth is 1 and
+// the depth's texels are its pixels.
 Texture2D<float4> g_GameNormals : register(t6);
 Texture2D<float4> g_GameColour : register(t7);
 Texture2D<float4> g_GameMaterial : register(t8);
@@ -312,6 +319,44 @@ float4 VsMain(uint id : SV_VertexID) : SV_POSITION
 int2 DepthTexel(float2 uv)
 {
   return int2(min(saturate(uv), 0.99999) / g_Frame.xy * g_Depth.xy);
+}
+
+// The depth copy's last texel (its size less one), the G-buffer's copies'
+// too (see g_GameNormals); the frame's last pixel at 100 %
+int2 DepthLast()
+{
+  return int2(round(g_Depth.xy / g_Frame.xy)) - 1;
+}
+
+// The frame's pixel a depth (or G-buffer) texel is in, kept on the frame
+// (the texel itself at 100 %)
+int2 FramePixelOf(int2 texel)
+{
+  return min(int2((float2(texel) + 0.5) / g_Depth.xy), int2(round(1.0 / g_Frame.xy)) - 1);
+}
+
+// The point of the frame on the centre of uv's depth texel (DepthTexel's):
+// at 100 % a pixel's centre is its texel's
+float2 DepthTexelUv(float2 uv)
+{
+  return (float2(DepthTexel(uv)) + 0.5) / g_Depth.xy * g_Frame.xy;
+}
+
+// A step on the frame (uv) of a whole number of the depth's texels, about
+// pixels of the frame's own and never under one texel: a point that far from
+// another is at the same place in its texel as that one is in its own (the
+// depth put on its ray stays in line with it, see RelativeAtTexel), and a
+// neighbour is never in the same texel. (2026-11-10, for any resolution
+// scale, worked out from the code: a step of a pixel is a texel at 100 % and
+// two at 200 %, but under 100 % two pixels side by side read the same texel,
+// the same depth on rays a pixel apart, which makes a surface face the
+// camera; at 150 % it's one or two texels from pixel to pixel, and the
+// points rebuilt go off the surface by a sixth of a pixel one way and the
+// other.) pixels: a whole number; at 100 % the step is exactly that many
+// pixels, as before.
+float2 TexelStep(float pixels)
+{
+  return max(1.0, round(pixels * g_Depth.xy)) / g_Depth.xy * g_Frame.xy;
 }
 
 float DepthAt(float2 uv)
@@ -1027,11 +1072,15 @@ static const float BodyWetness = 1.0;
 
 // Which way the frame's surface at uv faces (towards the camera), from the
 // nearer neighbour on each side; smooth: 0 where the neighbours jump away
-// (an edge, holes), 1 where they don't
+// (an edge, holes), 1 where they don't. The neighbours a pixel off in whole
+// depth texels (TexelStep), at the same place in their texels as uv is in
+// its own: on their texels' centres where uv is on its own (PsMain's,
+// DepthTexelUv), so here should be there too.
 float3 FrameNormal(float2 uv, float3 here, float distance, out float smooth)
 {
-  float3 left = RelativeAtUv(uv - float2(g_Frame.x, 0.0)), right = RelativeAtUv(uv + float2(g_Frame.x, 0.0));
-  float3 up = RelativeAtUv(uv - float2(0.0, g_Frame.y)), down = RelativeAtUv(uv + float2(0.0, g_Frame.y));
+  float2 step = TexelStep(1.0);
+  float3 left = RelativeAtUv(uv - float2(step.x, 0.0)), right = RelativeAtUv(uv + float2(step.x, 0.0));
+  float3 up = RelativeAtUv(uv - float2(0.0, step.y)), down = RelativeAtUv(uv + float2(0.0, step.y));
   float3 dx = length(here - left) < length(right - here) ? here - left : right - here;
   float3 dy = length(here - up) < length(down - here) ? here - up : down - here;
   float3 normal = normalize(cross(dy, dx));
@@ -1066,10 +1115,12 @@ float OffLine(float3 p, float3 a, float3 b)
 // failed it and the snow went off the far ground: the user, "snow effect
 // disappears when looking straight when it shouldn't".)
 // step: how far its neighbours are (pixels; 1, or 4 over what the snow lies
-// deep enough to bury, PsMain).
+// deep enough to bury, PsMain), in whole depth texels as FrameNormal's
+// (TexelStep: exactly that many pixels at 100 %).
 float3 SnowNormal(float2 uv, float3 here, float distance, float step, out float clean)
 {
-  float2 sx = float2(g_Frame.x * step, 0.0), sy = float2(0.0, g_Frame.y * step);
+  float2 texels = TexelStep(step);
+  float2 sx = float2(texels.x, 0.0), sy = float2(0.0, texels.y);
   float3 l1 = RelativeAtUv(uv - sx), l2 = RelativeAtUv(uv - 2.0 * sx);
   float3 r1 = RelativeAtUv(uv + sx), r2 = RelativeAtUv(uv + 2.0 * sx);
   float3 u1 = RelativeAtUv(uv - sy), u2 = RelativeAtUv(uv - 2.0 * sy);
@@ -3645,7 +3696,8 @@ float3 SnowLit(float3 around, float3 average)
 // basis its normal's cube map picks, x 0.5 + 0.5 into its target 0, and
 // that basis / 6 into its colour target's alpha; the sun's light pass takes
 // it back with z = sqrt(1 - x^2 - y^2), the world normal's c-th part that
-// dotted with the basis' c-th float4.)
+// dotted with the basis' c-th float4.) px: the G-buffer's texel, the depth's
+// (DepthTexel: the frame's pixel at 100 %).
 bool GameSurfaceAt(int2 px, out float3 n, out float smoothness)
 {
   n = float3(0.0, 1.0, 0.0);
@@ -3686,11 +3738,13 @@ bool GameSurfaceAt(int2 px, out float3 n, out float smoothness)
 // far it tells (none where too little is given back to tell, less where it's
 // mostly a mirror or a metal). spread: its 2 x 2 pixels that many apart (1:
 // side by side; PileLight's further apart, a wider patch of the ground).
+// px and spread in the G-buffer's texels (the depth's, DepthTexel), each
+// texel's picture the frame's pixel it's in (FramePixelOf; the same at 100 %).
 float3 GameLightAt(int2 px, float3 view, float3 n, float smoothness, int spread, out float trust)
 {
   float nv = saturate(dot(n, view));
   float glancing = pow(1.0 - nv, 5.0);
-  int2 last = int2(round(1.0 / g_Frame.xy)) - 1;
+  int2 last = DepthLast();
   float3 picture = 0.0, given = 0.0, diffuse = 0.0;
   float mirrored = 0.0, metal = 0.0;
   [unroll] for (int k = 0; k < 4; ++k)
@@ -3702,7 +3756,7 @@ float3 GameLightAt(int2 px, float3 view, float3 n, float smoothness, int spread,
     float3 mirror = f0 + (max(smoothness.xxx, f0) - f0) * glancing;
     given += base * (1.0 - material.y) * (1.0 - mirror) + mirror;
     diffuse += base * (1.0 - material.y);
-    picture += pow(saturate(g_Scene.Load(at).rgb), 2.2);
+    picture += pow(saturate(g_Scene.Load(int3(FramePixelOf(at.xy), 0)).rgb), 2.2);
     mirrored += Luma(mirror);
     metal += material.y;
   }
@@ -3757,6 +3811,7 @@ float4 SnowFromGameLight(float3 light, float trust, float fog)
   return float4(lerp(sky, snow, trust), 1.0);
 }
 
+// (px: the G-buffer's texel, DepthTexel)
 float4 SnowLitByGame(int2 px, float3 view, float fog)
 {
   float3 n;
@@ -3788,7 +3843,9 @@ float4 SnowLitByGame(int2 px, float3 view, float fog)
 // frame round the foot (average, SceneAround's B-spline, smooth too) x Snow
 // brightness against its default, as SnowGround takes it. footUv: the foot
 // on the frame; footY: its height (relative to the camera); fog: FogAt
-// there.
+// there. (The lattice on the frame's pixels, each node read at its pixel's
+// G-buffer and depth texel, DepthTexel, its 2 x 2 texels 4 px apart in
+// texels: the same at 100 %.)
 float4 PileLight(float2 footUv, float footY, float3 view, float fog, float distance, float3 average)
 {
   float oldBright = g_GameFrame.z > 0.0 ? g_GameFrame.z : 1.0;
@@ -3797,7 +3854,7 @@ float4 PileLight(float2 footUv, float footY, float3 view, float fog, float dista
     return float4(without, 1.0);
   float scale = PixelScale();
   float lattice = max(4.0, round(16.0 * scale));
-  int spread = (int)max(1.0, round(4.0 * scale));
+  int spread = (int)max(1.0, round(4.0 * scale * g_Depth.x));
   int2 last = int2(round(1.0 / g_Frame.xy)) - 1;
   // (in pixels, a pixel's centre at its whole number)
   float2 at = footUv / g_Frame.xy + float2(0.0, 8.0 * scale) - 0.5;
@@ -3811,16 +3868,18 @@ float4 PileLight(float2 footUv, float footY, float3 view, float fog, float dista
     float2 corner = float2(k & 1, k >> 1);
     float2 share = lerp(1.0 - f, f, corner);
     int2 px = clamp(int2((cell + corner) * lattice), 0, last);
+    float2 nodeUv = (float2(px) + 0.5) * g_Frame.xy;
+    int2 texel = DepthTexel(nodeUv);
     float3 n;
     float smoothness;
-    if (!GameSurfaceAt(px, n, smoothness) || n.y < 0.7)
+    if (!GameSurfaceAt(texel, n, smoothness) || n.y < 0.7)
       continue;
     bool sky;
-    float3 p = RelativeAtTexel((float2(px) + 0.5) * g_Frame.xy, sky);
+    float3 p = RelativeAtTexel(nodeUv, sky);
     if (sky || abs(p.y - footY) > slack)
       continue;
     float trust;
-    float3 light = GameLightAt(px, view, n, smoothness, spread, trust);
+    float3 light = GameLightAt(texel, view, n, smoothness, spread, trust);
     float4 snow = SnowFromGameLight(light, trust, fog);
     float w = share.x * share.y;
     sum += lerp(without, snow.rgb, snow.a) * w;
@@ -4527,14 +4586,16 @@ float OverTheGround(float3 color, float3 around)
 // of points can get. Within 1.4 times: its own; from 2 times: not. And its
 // colour the base colour's (ChromaOf within 0.3, none from 0.6), so a red
 // marker over grey asphalt isn't, a yellow line is. 0 where the G-buffer
-// isn't there this frame or has no surface at the pixel, as before.
+// isn't there this frame or has no surface at the pixel, as before. px: the
+// pixel's G-buffer texel (DepthTexel); the rings' 8 and 24 pixels in its
+// texels (x g_Depth: the same at 100 %).
 float OwnColourAt(int2 px, float3 color, float3 around)
 {
   float3 n;
   float smoothness;
   if (!GameSurfaceAt(px, n, smoothness))
     return 0.0;
-  int2 last = int2(round(1.0 / g_Frame.xy)) - 1;
+  int2 last = DepthLast();
   float3 base = g_GameColour.Load(int3(px, 0)).rgb;
   float pixel = PixelScale();
   float ring = 0.0, counted = 0.0;
@@ -4542,7 +4603,7 @@ float OwnColourAt(int2 px, float3 color, float3 around)
   {
     [unroll] for (int k = 0; k < 8; ++k)
     {
-      int2 at = clamp(px + int2(round(RingDirections[k] * (r == 0 ? 8.0 : 24.0) * pixel)), 0, last);
+      int2 at = clamp(px + int2(round(RingDirections[k] * (r == 0 ? 8.0 : 24.0) * pixel * g_Depth.xy)), 0, last);
       float4 there = g_GameColour.Load(int3(at, 0));
       float basis = there.a * 6.0;
       if (abs(basis - round(basis)) <= 0.1 && basis < 5.5)
@@ -4610,9 +4671,12 @@ float HazeKeptOff(float2 uv)
   float bright = smoothstep(0.2, 0.4, Luma(c) - Luma(around) * 1.3);
   float vivid = smoothstep(0.9, 1.5, length(ChromaOf(c) - ChromaOf(around))) * smoothstep(0.08, 0.2, Luma(c));
   float kept = max(bright, vivid);
-  // (not the road's paint, the surface's own colour: OwnColourAt)
+  // (not the road's paint, the surface's own colour: OwnColourAt, at the
+  // pixel's G-buffer texel, DepthTexel's without its clamp: uv is a pixel's
+  // centre, on the frame; with it the rain's copy of the shader took one more
+  // register)
   [branch] if (kept > 0.002)
-    kept *= 1.0 - OwnColourAt(int2(uv / g_Frame.xy), c, around);
+    kept *= 1.0 - OwnColourAt(int2(uv / g_Frame.xy * g_Depth.xy), c, around);
   return kept;
 }
 
@@ -4952,7 +5016,15 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
   }
   else
   {
-    float3 here = RelativeAt(uv, depth);
+    // (on its depth texel's centre, as the points round it are taken,
+    // RelativeAtTexel, and its facing's neighbours, FrameNormal and
+    // SnowNormal from that centre, DepthTexelUv: the pixel's own centre at
+    // 100 %; at another resolution scale a pixel's centre is off its
+    // texel's, and the depth put on the pixel's ray was off the surface by up
+    // to half a texel's step. The G-buffer is read at the same texel,
+    // DepthTexel(uv).)
+    float2 hereUv = DepthTexelUv(uv);
+    float3 here = RelativeAt(hereUv, depth);
     distance = length(here);
     dir = here / max(distance, 1e-3);
     float3 view = -dir;
@@ -4962,7 +5034,7 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
     float smooth = 1.0;
     float3 normal = float3(0.0, 1.0, 0.0);
     [branch] if (!Skipped(SkipFacing))
-      normal = FrameNormal(uv, here, distance, smooth);
+      normal = FrameNormal(hereUv, here, distance, smooth);
     float ground = smoothstep(0.55, 0.85, normal.y) * smooth;
     sceneNormal = normal;
     // How the wet look shades it (how much of the ground's darkening, its
@@ -4991,7 +5063,7 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
       // game's G-buffer, g_Options.y)
       [branch] if (lean > 0.0 && !Skipped(SkipFacing) && g_Options.y < 0.5)
       {
-        if (GameSurfaceAt(int2(position.xy), gameNormal, gameSmooth) && dot(gameNormal, view) > 0.0)
+        if (GameSurfaceAt(DepthTexel(uv), gameNormal, gameSmooth) && dot(gameNormal, view) > 0.0)
         {
           shadeNormal = normalize(lerp(normal, gameNormal, lean));
           shadeGround = smoothstep(0.55, 0.85, shadeNormal.y) * lerp(smooth, 1.0, lean);
@@ -5463,7 +5535,7 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
       float3 snowNormal = normal;
       [branch] if (distance < g_SnowDrift.w && !Skipped(SkipSnowFacing))
       {
-        snowNormal = SnowNormal(uv, here, distance, 1.0, clean);
+        snowNormal = SnowNormal(DepthTexelUv(uv), here, distance, 1.0, clean);
         if (buried > 0.0)
         {
           float cleanWide;
@@ -5474,7 +5546,7 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
           // than a stone close by.)
           float pixelAngle = 2.0 * g_Frame.x / g_ProjectionXY.x;
           float span = clamp(round(0.12 / max(distance * pixelAngle, 1e-5)), max(1.0, round(4.0 * PixelScale())), 48.0);
-          float3 wide = SnowNormal(uv, here, distance, span, cleanWide);
+          float3 wide = SnowNormal(DepthTexelUv(uv), here, distance, span, cleanWide);
           snowNormal = normalize(lerp(snowNormal, wide, buried * cleanWide));
           clean = lerp(clean, max(clean, cleanWide), buried);
         }
@@ -5491,7 +5563,7 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
       float gameSmooth = 0.0;
       bool game = false;
       [branch] if (!Skipped(SkipSnowFacing))
-        game = GameSurfaceAt(int2(position.xy), gameNormal, gameSmooth) && dot(gameNormal, view) > -0.2;
+        game = GameSurfaceAt(DepthTexel(uv), gameNormal, gameSmooth) && dot(gameNormal, view) > -0.2;
       float byGame = game && distance < g_SnowDrift.w ? 1.0 - clean : 0.0;
       if (byGame > 0.0)
         snowNormal = normalize(lerp(snowNormal, gameNormal, byGame));
@@ -5547,7 +5619,7 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
         float3 lightAround = 0.0;
         [branch] if (!Skipped(SkipSnowLight))
         {
-          lit = SnowLitByGame(int2(position.xy), view, FogAt(here));
+          lit = SnowLitByGame(DepthTexel(uv), view, FogAt(here));
           if (lit.a < 0.999)
             lightAround = SnowLightAround(uv, here, snowNormal, distance, depthHere);
         }
@@ -5555,7 +5627,7 @@ float4 PsMain(float4 position : SV_POSITION) : SV_TARGET
         // (laid on the road's paint, the surface's own colour: OwnColourAt)
         float overGround = OverTheGround(color, around);
         [branch] if (overGround > 0.002)
-          overGround *= 1.0 - OwnColourAt(int2(position.xy), color, around);
+          overGround *= 1.0 - OwnColourAt(DepthTexel(uv), color, around);
         snow.a *= (1.0 - overGround) * (1.0 - GlowAt(color, average, abs(dot(view, snowNormal))));
         if (snow.a > 0.002)
         {

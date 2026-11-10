@@ -117,10 +117,19 @@ camera, ahead of it and along the selected track:
 - The game crashes when some of its limits run out (zones, meshes, model instances, the renderer's
   draw batches and memory). The tools watch them and hold the camera's zones back in time; the
   menu shows how full each one is.
-- In busy parts of the city what's loaded around Faith already fills the renderer's draw batch to
-  about 75 %, past the default hold-back of 70 %. *Hold back from* (up to 78 %) lets more load
-  there, with less room before a crash.
-- *Unrestricted* ignores the renderer's limits for more distance, but **the game can crash**.
+- *Room for the whole city* (on by default): the game files what it draws in one draw batch, room
+  for 111872 instances, far less than the whole city needs (in busy parts what's loaded around
+  Faith alone takes about 75 % of it). On, the renderer's eight unused batches take the rest.
+  Switched on or off, it takes effect only while the renderer's first draw batch is still well
+  short of where the spread starts and its other batches have never been used; CT.log says when
+  it's switched.
+- At a limit (the draw batch at 80 %, or with *Room for the whole city* on the renderer's
+  instance list) the camera's extra zones are held back; a little higher the least important go:
+  what's behind the camera first, then what's in view, then the *Always* districts, then the point
+  ahead of the camera. Right at the limit the rain's zones and the real Shard's go too (before the
+  point ahead), and the camera's own point last. A zone point taken away stays out for at least
+  10 s, longer each time it's taken away again soon, and (except the camera's own two) until
+  there's clearly room again (under 70 %), so the same zones don't load and unload over and over.
 - After starting the game, quit to the main menu and continue once: the next level load gets
   more room for model instances.
 - Some safe houses may or may not load with this setting.

@@ -418,7 +418,10 @@ namespace
 
   // Per streamer: the slot count last seen, when it last changed, when a focus
   // was last added, and when foci were last taken away (for room, or to make
-  // room for one in view)
+  // room for one in view); how many of the zones it was asked for hadn't
+  // loaded yet at its last update; and when it last asked for a turn at the
+  // gate all streamers share near the limits and last had one (see
+  // MayAddFocus)
   struct StreamerGate
   {
     __int64 Streamer;
@@ -427,13 +430,158 @@ namespace
     ULONGLONG LastAdd;
     ULONGLONG LastRemove;
     ULONGLONG LastSwap;
-    // The camera's own focus and the one ahead of it (by FocusCamera and
-    // FocusAhead) were taken away at the limit, back once there's room
-    bool HeldOut[2];
+    int Waiting;
+    ULONGLONG WaitingAt;
+    ULONGLONG NearAsk;
+    ULONGLONG NearServed;
   };
   enum Turn { Turn_Remove, Turn_Swap };
   StreamerGate g_Gates[8]{};
   SRWLOCK g_GateLock = SRWLOCK_INIT;
+  // A streamer's waiting zones count for the shared gate this long after its
+  // last update (one that has gone, after a level load, doesn't hold it)
+  const ULONGLONG GateWaitingFreshMs = 2000;
+
+  // Near the limits (from their settle levels, see AboveSettleLevel) all
+  // streamers share one gate for the foci that aren't the camera's own: one
+  // focus in any of them at a time (each streamer added its own in the same
+  // update, and their zones landed on top of each other), and only once
+  // every zone asked for in all of them has loaded: zones only get their
+  // slots and their instances once they load, so before that the counts
+  // didn't show what the last focus brings yet. A zone can wait for good (a
+  // bundle that never starts loading), so after AddWaitMostMs of zones
+  // waiting all along the next one goes in anyway, and the wait starts again
+  // (at most one such add every AddWaitMostMs while zones go on waiting).
+  // The streamers take turns: one doesn't get the turn while another that
+  // has asked for one in the last GateWaitingFreshMs has waited longer since
+  // its last (they update in the same order every frame, so the first could
+  // otherwise take every turn while it had a focus missing).
+  ULONGLONG g_LastNearAdd = 0;      // with g_GateLock
+  ULONGLONG g_WaitingSince = 0;     // with g_GateLock: since when some zone has been waiting (0: none)
+  const ULONGLONG AddWaitMostMs = 10000;
+
+  // The tools' foci taken away for room are held out: any of them, by its
+  // index, for every streamer (taken away from one streamer's list, no
+  // streamer adds it back). At the limit the same foci used to go back in as
+  // soon as the fill was under the hold-back level again, their zones loaded,
+  // it went over, and they were taken away again: every 1 - 4 s, the same
+  // zones loading and unloading (a tester's log, 2.0.0: 38 times in 10
+  // minutes). Held out, a focus only comes back once the fill is well under
+  // the hold-back level (HoldBackUseRelease of it, with nothing at any level),
+  // and not before its time is up: HoldFirstMs, twice as long each time it's
+  // taken away again within HoldAgainWithinMs of coming back, up to
+  // HoldMostMs. While the most important focus that's missing is held out,
+  // nothing after it goes in either (otherwise less important ones took its
+  // room, and were taken away in turn). A focus that now stands for another
+  // place (a new grid corner, the Always districts worked out again, a track
+  // point that moved) forgets its hold: it was for the old place (see
+  // ForgetMovedHolds).
+  struct FocusHold
+  {
+    bool Out;
+    ULONGLONG Until;     // not back before this
+    ULONGLONG HoldMs;    // this time's
+    ULONGLONG BackAt;    // when it last came back (0: not yet)
+    float X, Z;          // where it was when it was taken away
+    int Tier;            // and its tier then (FocusTier)
+    ULONGLONG TierForgotAt; // when it last came back by coming into view (ForgetMovedHolds)
+  };
+  FocusHold g_FocusHolds[MaxStreamingFoci]{};  // with g_GateLock
+  const ULONGLONG HoldFirstMs = 10000;
+  const ULONGLONG HoldMostMs = 120000;
+  const ULONGLONG HoldAgainWithinMs = 60000;
+  const float HoldForgetDistance = 100.f;      // moved this far (flat), it's another place
+  // How close the fullest of the limits is to where the tools hold back (1:
+  // at its hold-back level, see WatchInstanceLists), and how far under it the
+  // foci held out come back: 0.875 of the draw batch's 80 % is 70 %
+  std::atomic<float> g_LimitUse{ 0.f };
+  const float HoldBackUseRelease = 0.875f;
+  std::atomic<int> g_TakeAways{ 0 };   // foci taken away for room, all streamers (for the log)
+
+  // Taken away for room: held out (see FocusHold); x and z where it was. One
+  // already held out (another streamer's list had it too) keeps its time.
+  // Call with g_GateLock held.
+  void HoldOut(int i, ULONGLONG now, float x, float z, int tier)
+  {
+    FocusHold& hold = g_FocusHolds[i];
+    if (hold.Out)
+      return;
+    ULONGLONG ms = hold.BackAt && now - hold.BackAt < HoldAgainWithinMs ? hold.HoldMs * 2 : HoldFirstMs;
+    if (ms < HoldFirstMs) ms = HoldFirstMs;
+    if (ms > HoldMostMs) ms = HoldMostMs;
+    hold.Out = true;
+    hold.Until = now + ms;
+    hold.HoldMs = ms;
+    hold.X = x;
+    hold.Z = z;
+    hold.Tier = tier;
+  }
+
+  // A focus that now stands for another place forgets its hold (see
+  // FocusHold): a grid corner's focus given to a new corner, the Always
+  // districts worked out again, a track point that moved. The camera's own
+  // and the one ahead of it go with the camera, so theirs only once it is
+  // further than the stream distance in view from where they were taken
+  // away (Go to, a track starting somewhere else, the camera off and on
+  // elsewhere): the zones that filled the room went with the old place, and
+  // held out the camera's own focus would hold back everything after it.
+  // One taken away behind the camera (or on the track) that's now in view
+  // forgets it too: turned round at a limit, the view would otherwise stay
+  // unloaded (held out, it holds back everything after it, so nothing behind
+  // makes room for it, see SyncStreamingFoci); in view it goes the way 2.0.0
+  // had it, one behind taken away for it a second. At most once every
+  // HoldAgainWithinMs a focus, keeping the rest of its record (taken away
+  // again soon, its hold doubles): one at the edge of the view that the
+  // camera's shake swings in and out would otherwise come back after every
+  // take-away. Camera hook.
+  void ForgetMovedHolds(ZoneFocusResult const results[], bool const wanted[], int const tier[])
+  {
+    ULONGLONG now = GetTickCount64();
+    AcquireSRWLockExclusive(&g_GateLock);
+    for (int i = 0; i < MaxStreamingFoci; ++i)
+    {
+      FocusHold& hold = g_FocusHolds[i];
+      if (!hold.Out || !wanted[i])
+        continue;
+      if (hold.Tier > TierInView && tier[i] == TierInView &&
+        !(hold.TierForgotAt && now - hold.TierForgotAt < HoldAgainWithinMs))
+      {
+        hold.Out = false;
+        hold.BackAt = now;
+        hold.TierForgotAt = now;
+        continue;
+      }
+      float forget = i < FocusRingFirst ? MaxStreamDistanceInView : HoldForgetDistance;
+      float dx = results[i].Position[0] - hold.X, dz = results[i].Position[2] - hold.Z;
+      if (dx * dx + dz * dz > forget * forget)
+        hold = FocusHold{};
+    }
+    ReleaseSRWLockExclusive(&g_GateLock);
+  }
+
+  // A level load: every hold is forgotten (their zones went with the level)
+  void ForgetAllHolds()
+  {
+    AcquireSRWLockExclusive(&g_GateLock);
+    for (FocusHold& hold : g_FocusHolds)
+      hold = FocusHold{};
+    ReleaseSRWLockExclusive(&g_GateLock);
+  }
+
+  // How many of the tools' foci that are wanted are held out now (for the log)
+  int CountHeldOut()
+  {
+    bool wanted[MaxStreamingFoci];
+    AcquireSRWLockShared(&g_FocusLock);
+    memcpy(wanted, g_FocusWanted, sizeof(wanted));
+    ReleaseSRWLockShared(&g_FocusLock);
+    int held = 0;
+    AcquireSRWLockShared(&g_GateLock);
+    for (int i = 0; i < MaxStreamingFoci; ++i)
+      held += g_FocusHolds[i].Out && wanted[i] ? 1 : 0;
+    ReleaseSRWLockShared(&g_GateLock);
+    return held;
+  }
 
   // Taking foci away only shows in the counts once their zones have unloaded,
   // so it's paced: two every half second when it's too full (not on every
@@ -451,8 +599,27 @@ namespace
     StreamerGate* pGate = &g_Gates[0];
     for (StreamerGate& gate : g_Gates)
       if (gate.LastChange < pGate->LastChange) pGate = &gate;
-    *pGate = { pZoneStreamer, used, now, 0, 0, 0, { false, false } };
+    *pGate = { pZoneStreamer, used, now, 0, 0, 0, 0, 0, 0, 0 };
     return pGate;
+  }
+
+  // A streamer's zones asked for that haven't loaded yet, at its update: for
+  // the shared gate (MayAddFocus), with since when any streamer has had some
+  void NoteZonesWaiting(__int64 pZoneStreamer, int used, int waiting)
+  {
+    ULONGLONG now = GetTickCount64();
+    AcquireSRWLockExclusive(&g_GateLock);
+    StreamerGate* pGate = FindGate(pZoneStreamer, used, now);
+    pGate->Waiting = waiting > 0 ? waiting : 0;
+    pGate->WaitingAt = now;
+    int all = 0;
+    for (StreamerGate const& gate : g_Gates)
+      if (gate.Streamer && now - gate.WaitingAt <= GateWaitingFreshMs) all += gate.Waiting;
+    if (all == 0)
+      g_WaitingSince = 0;
+    else if (!g_WaitingSince)
+      g_WaitingSince = now;
+    ReleaseSRWLockExclusive(&g_GateLock);
   }
 
   // Whether it's been long enough since the last removal (swap, zone read);
@@ -3061,6 +3228,18 @@ namespace
   // Any district set to Never (so the zone streamer hook knows whether to look)
   std::atomic<bool> g_AnyNeverDistrict{ false };
 
+  // Any district set to Always or Never (for the menu: they apply whether
+  // the world is loaded around the camera or not)
+  bool AnyDistrictSet()
+  {
+    bool any = false;
+    AcquireSRWLockShared(&g_DistrictLock);
+    for (District const& district : g_Districts)
+      any |= district.State != District_Normal;
+    ReleaseSRWLockShared(&g_DistrictLock);
+    return any;
+  }
+
   // GAME > Districts > the real Shard: a point inside its tower's zone (55) in
   // the buildings' streamer, and that streamer, for its focus (camera hook)
   bool ShardZonePoint(float* point, __int64& streamer)
@@ -3244,26 +3423,14 @@ namespace
     return true;
   }
 
-  // The camera's own focus or the one ahead of it (focus: FocusCamera or
-  // FocusAhead) held out (set 1) or let back (set 0), or only asked (set -1).
-  // Gives whether it's held out.
-  bool OwnFocusHeldOut(__int64 pZoneStreamer, int focus, int set)
-  {
-    ULONGLONG now = GetTickCount64();
-    AcquireSRWLockExclusive(&g_GateLock);
-    StreamerGate* pGate = FindGate(pZoneStreamer, 0, now);
-    if (set >= 0)
-      pGate->HeldOut[focus] = set != 0;
-    bool heldOut = pGate->HeldOut[focus];
-    ReleaseSRWLockExclusive(&g_GateLock);
-    return heldOut;
-  }
-
   // Settled and room for one more? slots: slots in use, inUse: with the
-  // zones asked for; fast: far from every limit (FastFillPacingMs)
-  bool MayAddFocus(__int64 pZoneStreamer, int slots, int inUse, bool fast)
+  // zones asked for; fast: far from every limit (FastFillPacingMs); nearLimit:
+  // from the limits' settle levels on (AboveSettleLevel), where all streamers
+  // share one gate (see g_LastNearAdd)
+  bool MayAddFocus(__int64 pZoneStreamer, int slots, int inUse, bool fast, bool nearLimit)
   {
     ULONGLONG now = GetTickCount64();
+    nearLimit = nearLimit && !fast;
     AcquireSRWLockExclusive(&g_GateLock);
     StreamerGate* pGate = FindGate(pZoneStreamer, slots, now);
     if (slots != pGate->LastUsed)
@@ -3273,9 +3440,37 @@ namespace
     }
     bool settled = fast ? now - pGate->LastAdd >= FastFillPacingMs :
       now - pGate->LastChange >= ZoneSlotsSettleMs && now - pGate->LastAdd >= ZoneSlotsSettleMs;
+    if (settled && nearLimit && inUse < ZoneSlotsAddBelow())
+    {
+      // (asking only when it could be given one: one at its zone-slot add
+      // level asking every update would hold every other streamer back)
+      pGate->NearAsk = now;
+      settled = now - g_LastNearAdd >= ZoneSlotsSettleMs &&
+        (!g_WaitingSince || now - g_WaitingSince >= AddWaitMostMs);
+      // (in turns: not while another streamer asking has waited longer)
+      for (StreamerGate const& gate : g_Gates)
+        if (settled && &gate != pGate && gate.Streamer && gate.NearAsk && now - gate.NearAsk <= GateWaitingFreshMs &&
+          gate.NearServed < pGate->NearServed)
+          settled = false;
+    }
     bool allowed = settled && inUse < ZoneSlotsAddBelow();
     if (allowed)
+    {
       pGate->LastAdd = now;
+      if (nearLimit)
+      {
+        g_LastNearAdd = now;
+        pGate->NearServed = now;
+        // Gone in while zones were still waiting (after AddWaitMostMs of
+        // it): the wait starts again, so the next one waits for the loads
+        // (or AddWaitMostMs) as well. Otherwise, with some zone nearly always
+        // waiting while the camera or Faith moves (the count is of every zone
+        // the streamer was asked for, the game's own too) or one that never
+        // loads, every add after the first 10 s went in at the settle pace.
+        if (g_WaitingSince)
+          g_WaitingSince = now;
+      }
+    }
     ReleaseSRWLockExclusive(&g_GateLock);
     return allowed;
   }
@@ -3357,17 +3552,22 @@ namespace
   // Where the game starts to go wrong: the end of the chunk pointers, or
   // without the wider handle the first 1024
   int BatchSafeChunks() { return util::offsets::BatchChunkIndexWidened() ? BatchChunkPointers : 1024; }
-  // The hold-back levels below are shares of this: 1748 chunks, as they were
-  // tested, 300 short of the end; without the wider handle the same share of
-  // the first 1024. With the batches spread (hBatchAdd in Hooks.cpp): the
-  // category's 9 batches up to the spread's chunks each (the first may have
-  // more from before, and the last can go on to 2048).
-  int BatchCapacity()
+  // A batch's fill bytes only have room for this many chunks: past it they
+  // go into the next batch's start (all zeros while it's unused)
+  const int BatchFillRoomChunks = 1748;
+  // The hold-back levels below are shares of a category's room: 1748 chunks,
+  // as they were tested, 300 short of the end; without the wider handle the
+  // same share of the first 1024. Only category 0 is spread (hBatchAdd in
+  // Hooks.cpp): with the spread on, its 9 batches up to the spread's chunks
+  // each (the last can go on to 2048); the other three keep only their first
+  // batch whatever the spread, so their room stays 1748 chunks. (Until
+  // 2.0.1 the spread's room was taken for whichever category was fullest.)
+  int CategoryRoom(int category)
   {
     int spread = util::hooks::BatchSpread();
-    if (spread > 0)
+    if (category == 0 && spread > 0)
       return MaxBatches * spread * 64;
-    return (util::offsets::BatchChunkIndexWidened() ? 1748 : 874) * 64;
+    return (util::offsets::BatchChunkIndexWidened() ? BatchFillRoomChunks : 874) * 64;
   }
   // Zones are held back from BatchLimitFixed (80 %; until 2026-11-01 the
   // menu's Hold back from, 60 - 78 %), taken away 10 % higher and all of
@@ -3390,18 +3590,49 @@ namespace
   const int RendererInstanceListOffset = 0x142768;
   const int RecordRoomMargin = 32768;
 
-  // The fullest category of both renderer objects (all its batches: one,
-  // unless they're spread): its instances and its chunk count, and the most
-  // chunks any one batch has; and the renderer whose instance list is
-  // fullest: its instances (all its categories) and the list's room. 1 when
-  // read, 0 when no renderer object is there (no level), -1 when the read
-  // failed halfway.
-  int ReadFullestBatch(int& instances, int& chunks, int& mostChunks, int& rendererInstances, int& rendererRoom)
+  // What a read of the renderer's draw batches found (ReadFullestBatch)
+  struct BatchReading
+  {
+    // The fullest category of both renderer objects for its own room (see
+    // CategoryRoom): its instances (all its batches), its room, its chunks
+    int Instances, Room, Chunks;
+    float Fill;
+    int MostInstances;  // the most instances in any one category (what arriving zones show in, see BatchBurst)
+    int MostChunks;     // the most chunks any one batch has
+    // The fullest single batch against the end of its own chunk pointers
+    // (BatchSafeChunks, where the game crashes), whatever its category's room
+    float CrashFill;
+    // A batch past its room: past its chunk pointers, or with the spread past
+    // its fill bytes' room while the next batch is in use (its fill bytes
+    // are then written over that batch's start)
+    bool Overflowed;
+    // The renderer whose instance list is fullest: its instances (all its
+    // categories) and the list's room
+    int RendererInstances, RendererRoom;
+    // For the scan's guess at a level load (see WatchInstanceLists) and
+    // whether the spread can be switched (BatchSpreadSwitchSafe): the
+    // renderer objects, and in category 0 of any of them the most batches in
+    // use and the most chunks in its first batch; Partial: a renderer object
+    // without all its categories (those weren't read)
+    __int64 Renderers[RendererOwnerCount];
+    int FirstBatches, FirstChunks;
+    bool Partial;
+    // Category 0 with one batch, and its second batch's first bytes not all
+    // 0: its first batch's fill bytes past 1748 chunks (written there, they
+    // aren't cleared again); the research saw everything after the first
+    // batch 0 in a renderer that never had that many
+    bool FirstSpilled;
+  };
+
+  // 1 when read, 0 when no renderer object is there (no level), -1 when the
+  // read failed halfway
+  int ReadFullestBatch(BatchReading& r)
   {
     __int64 base = (__int64)g_gameHandle;
-    instances = chunks = mostChunks = rendererInstances = rendererRoom = 0;
+    r = BatchReading{};
     float rendererFill = -1.f;
     bool any = false;
+    int safeChunks = BatchSafeChunks();
     __try
     {
       for (int o = 0; o < RendererOwnerCount; ++o)
@@ -3411,6 +3642,7 @@ namespace
         __int64 pRenderer = *(__int64*)(pOwner + RendererOffset);
         if (pRenderer < 0x10000 || *(__int64*)pRenderer != base + RendererVTableRva) continue;
         any = true;
+        r.Renderers[o] = pRenderer;
         __int64* pList = (__int64*)(pRenderer + RendererInstanceListOffset);
         int room = pList[0] && pList[1] > pList[0] ? (int)((pList[1] - pList[0]) / 4) : 0;
         // and the instances' records (a pool of blocks of 1024), less a
@@ -3423,7 +3655,11 @@ namespace
         for (int c = 0; c < RendererCategories; ++c)
         {
           __int64 pCategory = *(__int64*)(pRenderer + RendererCategoryOffset + c * 8);
-          if (pCategory < 0x10000) continue;
+          if (pCategory < 0x10000)
+          {
+            r.Partial = true;
+            continue;
+          }
           int batches = *(int*)(pCategory + BatchCountOffset);
           if (batches > MaxBatches) batches = MaxBatches;
           int categoryInstances = 0, categoryChunks = 0;
@@ -3431,35 +3667,62 @@ namespace
           {
             BYTE* pBatch = (BYTE*)(pCategory + (__int64)b * BatchStride);
             int count = *(int*)(pBatch + BatchChunkCountOffset);
+            if (c == 0 && b == 0 && count > r.FirstChunks)
+              r.FirstChunks = count > 4096 ? 4096 : count;
             if (count <= 0) continue;
             if (count > 4096) count = 4096; // not a count any more: written over
             // The fill bytes past 1748 are in the next batch's room (unused,
-            // in the same category). Past the chunk pointers the count itself
-            // has been written over: counted as full, the worst case.
+            // in the same category, unless it's spread). Past the chunk
+            // pointers the count itself has been written over: counted as
+            // full, the worst case.
             int readable = count > BatchChunkPointers ? BatchChunkPointers : count;
             int sum = 0;
             for (int i = 0; i < readable; ++i)
               sum += pBatch[BatchFillOffset + i];
             if (count > BatchChunkPointers)
               sum += (count - BatchChunkPointers) * 64;
-            if (count > mostChunks)
-              mostChunks = count;
+            if (count > r.MostChunks)
+              r.MostChunks = count;
+            // A new instance goes into the batch's first chunk that isn't
+            // full, and only with none left does it take another chunk, so
+            // its instances (not its chunk count: the research only saw that
+            // grow while the renderer lives) say how close it is to taking
+            // its last one
+            float crashFill = (float)sum / (float)(safeChunks * 64);
+            if (crashFill > r.CrashFill)
+              r.CrashFill = crashFill;
+            if (count > safeChunks || (count > BatchFillRoomChunks && b + 1 < batches))
+              r.Overflowed = true;
             categoryInstances += sum;
             categoryChunks += count;
           }
-          if (categoryInstances > instances)
+          if (c == 0 && batches > r.FirstBatches)
+            r.FirstBatches = batches;
+          if (c == 0 && batches == 1)
           {
-            instances = categoryInstances;
-            chunks = categoryChunks;
+            BYTE const* pNext = (BYTE const*)(pCategory + BatchStride);
+            for (int i = 0; i < BatchChunkPointers - BatchFillRoomChunks && !r.FirstSpilled; ++i)
+              r.FirstSpilled = pNext[i] != 0;
           }
+          int categoryRoom = CategoryRoom(c);
+          float categoryFill = (float)categoryInstances / (float)categoryRoom;
+          if (categoryFill > r.Fill)
+          {
+            r.Fill = categoryFill;
+            r.Instances = categoryInstances;
+            r.Room = categoryRoom;
+            r.Chunks = categoryChunks;
+          }
+          if (categoryInstances > r.MostInstances)
+            r.MostInstances = categoryInstances;
           total += categoryInstances;
         }
         float fill = room > 0 ? (float)total / (float)room : 0.f;
         if (room > 0 && fill > rendererFill)
         {
           rendererFill = fill;
-          rendererInstances = total;
-          rendererRoom = room;
+          r.RendererInstances = total;
+          r.RendererRoom = room;
         }
       }
     }
@@ -3467,7 +3730,36 @@ namespace
     {
       return -1;
     }
+    // Nothing in any category yet: the room of the first
+    if (r.Room <= 0)
+      r.Room = CategoryRoom(0);
     return any ? 1 : 0;
+  }
+
+  // Whether the spread can be switched now with renderer objects there (with
+  // none it always can): in every one category 0 (the only one spread) has
+  // only ever used its first batch, and that batch has never run past 1748
+  // chunks (FirstSpilled), so batches 1 - 8 are still as the renderer's
+  // constructor made them (zeros); and that batch is BatchSwitchMargin
+  // chunks or more short of where the add's picking changes (PickBatch): the
+  // spread's chunks, now and after the switch, and 1748, past which it keeps
+  // the first batch (that one then runs on to 2048 as the game's own does).
+  // Switched then, it's as if the renderer had had the new setting from its
+  // start, unless more than BatchSwitchMargin chunks arrive between the read
+  // and the switch: switched on, a first batch past 1748 is kept (as the
+  // game's own) and the per-batch guard still takes zones away; switched off,
+  // a category already in its other batches stays spread in the add's hook
+  // (Hooks.cpp, g_BatchSpreadLast). fromChunks / toChunks: the spread now and
+  // after (0 off).
+  const int BatchSwitchMargin = 128;
+  bool BatchSpreadSwitchSafe(BatchReading const& r, int fromChunks, int toChunks)
+  {
+    if (r.Partial || r.FirstBatches > 1 || r.FirstSpilled)
+      return false;
+    int edge = BatchFillRoomChunks;
+    if (fromChunks > 0 && fromChunks < edge) edge = fromChunks;
+    if (toChunks > 0 && toChunks < edge) edge = toChunks;
+    return r.FirstChunks + BatchSwitchMargin <= edge;
   }
 
   bool ReadRenderArena(__int64& used, __int64& size)
@@ -3534,6 +3826,15 @@ namespace
   const int BatchBurst = 1000;
   const ULONGLONG BatchSettleMs = 1500;
   const float BatchSettleBelow = 0.2f;
+  // The log at the limit: the first warning, then at most a summary this often
+  const ULONGLONG BatchLogSummaryMs = 30000;
+  // GAME > Level streaming > Room for the whole city (the batch spread,
+  // [Misc] BatchSpreadChunks): category 0 of the renderer's draw batches goes
+  // on into its unused batches past this many chunks each. The research's
+  // whole city (every district Always, every zone of the three streamers
+  // loaded, 361029 renderer instances) was with 1700; without it one batch
+  // has room for 111872, and the whole city needs far more than that.
+  const int BatchSpreadDefault = 1700;
   std::atomic<ULONGLONG> g_BatchChangedAt{ 0 };
   std::atomic<float> g_BatchFillNow{ 0.f };
   std::atomic<float> g_BatchSettleFrom{ 0.5f };
@@ -3542,6 +3843,18 @@ namespace
   bool BatchSettled()
   {
     return g_BatchFillNow < g_BatchSettleFrom || GetTickCount64() - g_BatchChangedAt >= BatchSettleMs;
+  }
+
+  // From the settle levels on (the draw batch's and the meshes', where each
+  // streamer already waited for the counts to settle in 2.0.0): near enough a
+  // limit for the gate all streamers share (MayAddFocus). Not the model
+  // instance lists or the renderer's memory: with the whole city loaded (the
+  // research's run with every district Always) those stood at 63 % and 51 %,
+  // which from their settle levels would have put the end of it through the
+  // shared gate, one focus at a time waiting for every zone to load.
+  bool AboveSettleLevel()
+  {
+    return g_BatchFillNow >= g_BatchSettleFrom || g_MeshesNow >= MeshesSettleFrom();
   }
 
   struct InstanceLists
@@ -3640,13 +3953,14 @@ namespace
   // and what's least important goes first. fastFill: far from the renderer's
   // and the mesh streaming's limits (see FastFillPacingMs). Gives how many
   // were in the list before and after, how many zones were in use or asked
-  // for, and which foci are in it.
+  // for, and which foci are in it. results: where each focus is (for the
+  // holds, see FocusHold).
   // The foci are added with the streamer as their key, which the focus gets
   // back when the streamer asks where it is (GetStreamingFocus). The game's
   // remove function writes out of bounds for a focus that isn't there, so
   // it's only called for ones found in the list.
   void SyncStreamingFoci(__int64 pZoneStreamer, bool const wanted[], int const order[], int const tier[],
-    __int64 pAdd, __int64 pRemove, int instancePressure, bool swapUseful, bool fastFill,
+    ZoneFocusResult const results[], __int64 pAdd, __int64 pRemove, int instancePressure, bool swapUseful, bool fastFill,
     int& before, int& after, int& usedZones, bool& limited, bool present[])
   {
     before = after = usedZones = 0;
@@ -3675,6 +3989,8 @@ namespace
       usedZones = CountZonesInUse(pZoneStreamer, zonesWaiting);
       if (usedZones < usedSlots)
         usedZones = usedSlots; // couldn't be read: the slots at least
+      // For the gate all streamers share near the limits
+      NoteZonesWaiting(pZoneStreamer, usedSlots, zonesWaiting);
       auto remove = [&](int i) {
         ((tZoneFocusChange)pRemove)(pFocusList, pZoneStreamer, &g_Foci[i]);
         present[i] = false;
@@ -3687,23 +4003,36 @@ namespace
           remove(i);
       }
 
+      // The foci held out since they were taken away for room (see
+      // FocusHold), and the ones taken away now (at most two, and one to
+      // make room for one in view), held out at the end
+      ULONGLONG now = GetTickCount64();
+      bool heldOut[MaxStreamingFoci];
+      ULONGLONG heldUntil[MaxStreamingFoci];
+      AcquireSRWLockShared(&g_GateLock);
+      for (int i = 0; i < MaxStreamingFoci; ++i)
+      {
+        heldOut[i] = g_FocusHolds[i].Out;
+        heldUntil[i] = g_FocusHolds[i].Until;
+      }
+      ReleaseSRWLockShared(&g_GateLock);
+      const int MostTakenAway = 4;
+      int takenAway[MostTakenAway];
+      int takenCount = 0;
+      auto takeAway = [&](int i) {
+        remove(i);
+        heldOut[i] = true;
+        if (takenCount < MostTakenAway)
+          takenAway[takenCount++] = i;
+      };
+
       // The camera's own only when the game is already out of room; the one
       // ahead of it whenever the others go, after all of them. Kept in until
       // the top level as well, the moving point ahead went on loading new
       // zones and took the draw batch past the top level (95 %), then in and
-      // out every second. Taken away like that, each only comes back once
-      // there's room again: at the limit the camera's own otherwise went in
-      // and out every second, its zones loading and unloading each time. (By
-      // which focus it is: with Load ahead off, second in the order is one of
-      // the others.)
+      // out every second. (By which focus it is: with Load ahead off, second
+      // in the order is one of the others.)
       bool mayGo[2] = { instancePressure >= 3, true };
-      if (instancePressure == 0 && usedZones <= ZoneSlotsAddBelow())
-      {
-        OwnFocusHeldOut(pZoneStreamer, FocusCamera, 0);
-        OwnFocusHeldOut(pZoneStreamer, FocusAhead, 0);
-      }
-      bool heldOut[2] = { OwnFocusHeldOut(pZoneStreamer, FocusCamera, -1),
-        OwnFocusHeldOut(pZoneStreamer, FocusAhead, -1) };
       if (usedZones > ZoneSlotsRemoveAbove() || instancePressure >= 2)
       {
         // Too full: the two least important go. Near the end of the zone slots,
@@ -3712,16 +4041,26 @@ namespace
         int removed = 0;
         if (urgent || TakeTurn(pZoneStreamer, Turn_Remove, RemovePacingMs))
         {
-          for (int rank = MaxStreamingFoci - 1; rank >= 0 && removed < 2; --rank)
+          // In three rounds, the least important first in each: the camera's
+          // extra zones and the Always districts; then the zones the game's
+          // rain is in and the real Shard's, only right at the end (urgent)
+          // and once all of those have gone (in a tester's log the game's
+          // rain went when its zone was taken away with the rest); then the
+          // camera's own and the one ahead of it
+          for (int round = 0; round < 3 && removed < 2; ++round)
           {
-            int i = order[rank];
-            bool ownFocus = i == FocusCamera || i == FocusAhead;
-            if (!present[i] || (ownFocus && !mayGo[i]))
-              continue;
-            remove(i);
-            removed++;
-            if (ownFocus)
-              heldOut[i] = OwnFocusHeldOut(pZoneStreamer, i, 1);
+            for (int rank = MaxStreamingFoci - 1; rank >= 0 && removed < 2; --rank)
+            {
+              int i = order[rank];
+              if (!present[i])
+                continue;
+              bool ownFocus = i == FocusCamera || i == FocusAhead;
+              bool kept = i >= FocusWeatherFirst; // the weather's foci and FocusShard
+              if ((ownFocus ? 2 : (kept ? 1 : 0)) != round || (ownFocus && !mayGo[i]) || (kept && !urgent))
+                continue;
+              takeAway(i);
+              removed++;
+            }
           }
         }
         // Held back: some of the camera's were taken away or are waiting
@@ -3735,23 +4074,37 @@ namespace
       {
         // One at a time, so the slots it fills show up before the next is
         // added. The camera's own focus and the one ahead of it go in whenever
-        // there's room for anything, held back or not; the rest once the slots
-        // have caught up with the last one (or far from every limit, at a
-        // steady pace).
+        // there's room for anything, while the rest are held back or not
+        // (unless they're held out themselves, below); the rest once the
+        // slots have caught up with the last one (or far from every limit, at
+        // a steady pace; near the limits one at a time in all streamers, once
+        // the zones asked for have loaded: see MayAddFocus).
         bool fast = fastFill && usedZones < FastFillZonesBelow && zonesWaiting <= FastFillMostWaiting;
+        bool nearLimit = AboveSettleLevel();
+        // A focus held out comes back once there's room again: nothing at
+        // any level, the fullest limit well under its hold-back level, the
+        // zone slots under theirs, and its time up. The camera's own and the
+        // one ahead of it as in 2.0.0 (nothing at any level, the zone slots
+        // under theirs) once their time is up and the draw batch and the
+        // meshes have settled (they skip the gates below): in busy parts
+        // what's loaded around Faith alone can keep the draw batch over 70 %
+        // without the room for the whole city, and held out they'd hold back
+        // everything after them for as long as the camera stays there.
+        bool roomAgain = instancePressure == 0 && g_LimitUse < HoldBackUseRelease && usedZones <= ZoneSlotsAddBelow();
+        bool ownRoomAgain = instancePressure == 0 && usedZones <= ZoneSlotsAddBelow() && MeshesSettled() && BatchSettled();
         for (int rank = 0; rank < MaxStreamingFoci; ++rank)
         {
           int i = order[rank];
           if (!wanted[i] || present[i])
             continue;
           bool ownFocus = i == FocusCamera || i == FocusAhead;
-          if (ownFocus && heldOut[i])
+          if (heldOut[i] && !((ownFocus ? ownRoomAgain : roomAgain) && now >= heldUntil[i]))
           {
             limited = true;
             break;
           }
           if (!ownFocus && (instancePressure >= 1 || !MeshesSettled() || !BatchSettled() ||
-            !MayAddFocus(pZoneStreamer, usedSlots, usedZones, fast)))
+            !MayAddFocus(pZoneStreamer, usedSlots, usedZones, fast, nearLimit)))
           {
             limited = usedZones >= ZoneSlotsAddBelow() || instancePressure >= 1;
             // Held back while something less important behind the camera is
@@ -3766,7 +4119,7 @@ namespace
                 if (present[j] && tier[j] >= TierTrack)
                 {
                   if (TakeTurn(pZoneStreamer, Turn_Swap, SwapPacingMs))
-                    remove(j);
+                    takeAway(j);
                   break;
                 }
               }
@@ -3775,8 +4128,29 @@ namespace
           }
           ((tZoneFocusChange)pAdd)(pFocusList, pZoneStreamer, &g_Foci[i]);
           present[i] = true;
+          if (heldOut[i])
+          {
+            AcquireSRWLockExclusive(&g_GateLock);
+            g_FocusHolds[i].Out = false;
+            g_FocusHolds[i].BackAt = now;
+            ReleaseSRWLockExclusive(&g_GateLock);
+          }
           break;
         }
+      }
+
+      // The ones taken away for room: held out (another streamer's list may
+      // have had them too, they keep their time then)
+      if (takenCount > 0)
+      {
+        AcquireSRWLockExclusive(&g_GateLock);
+        for (int k = 0; k < takenCount; ++k)
+        {
+          int i = takenAway[k];
+          HoldOut(i, now, results[i].Position[0], results[i].Position[2], tier[i]);
+        }
+        ReleaseSRWLockExclusive(&g_GateLock);
+        g_TakeAways += takenCount;
       }
 
       for (int i = 0; i < MaxStreamingFoci; ++i)
@@ -4816,6 +5190,9 @@ void CameraManager::PublishStreamingFocus(double dt)
     return a < b;
   });
 
+  // Held out for room at another place: that hold is forgotten
+  ForgetMovedHolds(results, wanted, tier);
+
   AcquireSRWLockExclusive(&g_FocusLock);
   memcpy(g_FocusResults, results, sizeof(results));
   memcpy(g_FocusWanted, wanted, sizeof(wanted));
@@ -4925,8 +5302,8 @@ void CameraManager::OnZoneStreamerUpdate(__int64 pZoneStreamer)
   // would unload and load again)
   if (!m_StreamingFocusReady)
     return;
+  static ZoneFocusResult s_results[MaxStreamingFoci]; // zone streamer hook only
   {
-    static ZoneFocusResult s_results[MaxStreamingFoci]; // zone streamer hook only
     static __int64 s_streamers[MaxStreamingFoci][MaxFocusStreamers];
     AcquireSRWLockShared(&g_FocusLock);
     memcpy(wanted, g_FocusWanted, sizeof(wanted));
@@ -4978,9 +5355,9 @@ void CameraManager::OnZoneStreamerUpdate(__int64 pZoneStreamer)
   float instanceFill = m_InstanceFill;
   long long arenaSize = m_ArenaSize;
   bool fastFill = m_InstancePressure == 0 && instanceFill >= 0.f && instanceFill < FastFillMostFill &&
-    (float)m_BatchInstances / (float)BatchCapacity() < m_BatchLimit - FastFillBatchMargin &&
+    m_BatchFill < m_BatchLimit - FastFillBatchMargin &&
     (arenaSize <= 0 || (float)m_ArenaUsed / (float)arenaSize < ArenaStopAdding - FastFillBatchMargin);
-  SyncStreamingFoci(pZoneStreamer, wanted, order, tier, m_pAddZoneFocus, m_pRemoveZoneFocus, m_InstancePressure,
+  SyncStreamingFoci(pZoneStreamer, wanted, order, tier, s_results, m_pAddZoneFocus, m_pRemoveZoneFocus, m_InstancePressure,
     swapUseful, fastFill, before, after, usedZones, limited, present);
   if (before == 0 && after > 0)
     util::log::Write("Zone streamer 0x%I64X now also loads the city around the camera or the Always districts", pZoneStreamer);
@@ -5017,8 +5394,14 @@ void CameraManager::OnZoneStreamerUpdate(__int64 pZoneStreamer)
       util::log::Write("Zone streamer 0x%I64X has %d of its %d zone slots in use or asked for: the camera's extra zones are held back so it can't run out",
         pZoneStreamer, usedZones, ZoneSlotCount());
     else if (!m_StreamUnrestricted && m_BatchPressure >= 1 && m_BatchPressure >= m_MeshPressure && m_BatchPressure >= m_ListPressure)
-      util::log::Write("The camera's extra zones are held back: the renderer's fullest draw batch has %d of its %d instances (zone streamer 0x%I64X, %d zone slots)",
-        (int)m_BatchInstances, BatchCapacity(), pZoneStreamer, usedZones);
+    {
+      if (m_BatchListFuller)
+        util::log::Write("The camera's extra zones are held back: the renderer's instance list has %d of its %d (all its draw batches; zone streamer 0x%I64X, %d zone slots)",
+          (int)m_RendererInstances, (int)m_RendererRoom, pZoneStreamer, usedZones);
+      else
+        util::log::Write("The camera's extra zones are held back: the renderer's fullest draw batch has %d of its %d instances (zone streamer 0x%I64X, %d zone slots)",
+          (int)m_BatchInstances, (int)m_BatchRoom, pZoneStreamer, usedZones);
+    }
     else if (!m_StreamUnrestricted && m_ArenaPressure >= 1 && m_ArenaPressure >= m_MeshPressure && m_ArenaPressure >= m_ListPressure)
       util::log::Write("The camera's extra zones are held back: the renderer's memory for mesh instances is %.1f of %d MB used (zone streamer 0x%I64X, %d zone slots)",
         m_ArenaUsed / 1048576.0, (int)(m_ArenaSize >> 20), pZoneStreamer, usedZones);
@@ -7111,8 +7494,12 @@ bool CameraManager::DrawDistrictList()
   ImGui::SameLine();
   if (ImGui::Button("All to Always##Districts"))
     setAll(District_Always);
-  ImGui::ItemTooltip("Keeps every district in the list loaded, within the same limits as the rest: far from Faith "
-    "they may hold part of it back.");
+  // As the renderer's draw batches are now (Room for the whole city)
+  ImGui::ItemTooltip(util::hooks::BatchSpread() > 0 ?
+    "Keeps every district in the list loaded. With Room for the whole city on, the renderer's draw batch has room "
+    "for all of it; at the game's other limits some of it can still be held back." :
+    "Keeps every district in the list loaded as far as there's room. With Room for the whole city off, the "
+    "renderer's draw batch holds only part of the city, and the rest is held back.");
   ImGui::SameLine();
   if (ImGui::Button("All to Never##Districts"))
     setAll(District_Never);
@@ -7622,6 +8009,24 @@ void CameraManager::ApplyHairFix()
   }
 }
 
+void CameraManager::SwitchBatchSpread(int chunks, const char* when)
+{
+  util::hooks::SetBatchSpread(chunks);
+  int spread = util::hooks::BatchSpread();
+  if (chunks > 0 && spread <= 0)
+  {
+    m_BatchSpreadMissing = true;
+    util::log::Warning("Room for the whole city: the renderer's add isn't hooked, its draw batches can't be spread "
+      "(one a category, as the game has it)");
+  }
+  else if (spread > 0)
+    util::log::Write("Room for the whole city on (%s): the renderer's first category of draw batches goes on into its %d "
+      "unused batches past %d chunks each, room for %d instances", when, MaxBatches - 1, spread, CategoryRoom(0));
+  else
+    util::log::Write("Room for the whole city off (%s): one draw batch a category as the game has it, room for %d instances",
+      when, CategoryRoom(0));
+}
+
 void CameraManager::WatchInstanceLists()
 {
   InstanceLists lists{};
@@ -7629,6 +8034,7 @@ void CameraManager::WatchInstanceLists()
   {
     m_InstancePressure = 0;
     m_InstanceFill = -1.f;
+    g_LimitUse = 0.f;
     return;
   }
 
@@ -7676,6 +8082,7 @@ void CameraManager::WatchInstanceLists()
   int meshPressure = (overflowing || inUse >= MeshesTakeAll()) ? 3 :
     (inUse >= MeshesTakeAway() ? 2 : (inUse >= MeshesStopAdding() ? 1 : 0));
   float meshFill = (float)inUse / MeshCapacity();
+  float listFill = fill;
   if (meshFill > fill) fill = meshFill;
   if (overflowing && !m_MeshesOverflowed)
     util::log::Warning("The game's mesh table went past its %d records (%d): it writes over its model instance lists, it can crash after this",
@@ -7729,39 +8136,97 @@ void CameraManager::WatchInstanceLists()
   // second (it adds up up to a few thousand bytes per batch)
   if (s_arenaBuild && now - m_BatchScanTick >= 100)
   {
-    int instances = 0, chunks = 0, mostChunks = 0, rendererInstances = 0, rendererRoom = 0;
-    int read = ReadFullestBatch(instances, chunks, mostChunks, rendererInstances, rendererRoom);
+    BatchReading reading;
+    int read = ReadFullestBatch(reading);
     if (read > 0)
     {
-      m_BatchInstances = instances;
-      m_BatchChunks = chunks;
-      m_BatchMostChunks = mostChunks;
-      m_RendererInstances = rendererInstances;
-      m_RendererRoom = rendererRoom;
+      m_BatchInstances = reading.Instances;
+      m_BatchRoom = reading.Room;
+      m_BatchFill = reading.Fill;
+      m_BatchChunks = reading.Chunks;
+      m_BatchMostChunks = reading.MostChunks;
+      m_BatchArriving = reading.MostInstances;
+      m_BatchCrashFill = reading.CrashFill;
+      m_RendererInstances = reading.RendererInstances;
+      m_RendererRoom = reading.RendererRoom;
       // Past its room the game has written over the memory after the batch,
       // and it can crash from here on (until a level load builds a new renderer)
-      bool overflowed = mostChunks > BatchSafeChunks();
+      bool overflowed = reading.Overflowed;
       if (overflowed && !m_BatchOverflowed)
-        util::log::Warning("The renderer's draw batch went past its room (%d of its %d chunks): the game can crash from here on, restart it",
-          mostChunks, BatchSafeChunks());
+        util::log::Warning("The renderer's draw batch went past its room (one batch at %d chunks; its room is %d, or %d while "
+          "the next batch is in use): the game can crash from here on, restart it",
+          reading.MostChunks, BatchSafeChunks(), BatchFillRoomChunks);
       m_BatchOverflowed = overflowed;
     }
     else if (read == 0)
     {
       // No renderer: no level
       m_BatchInstances = m_BatchChunks = m_BatchMostChunks = 0;
+      m_BatchRoom = reading.Room;
+      m_BatchFill = 0.f;
+      m_BatchArriving = 0;
+      m_BatchCrashFill = 0.f;
       m_RendererInstances = m_RendererRoom = 0;
       m_BatchOverflowed = false;
     }
     // A read that failed halfway keeps the last numbers (as 0 it let everything back in)
+
+    // The foci held out for room (see FocusHold) were for the last level:
+    // forgotten when a scan finds no renderer object, or other ones, or
+    // category 0's first batch with fewer chunks or batches than at the last
+    // scan (a renderer made again: the research only saw them grow while one
+    // lives). Only a guess at a level load (no hook on the renderer's
+    // constructor or teardown shows one), which is all the holds need.
+    if (read >= 0 && !reading.Partial)
+    {
+      static_assert(sizeof(m_BatchRenderers) / sizeof(m_BatchRenderers[0]) == RendererOwnerCount, "one for each renderer owner");
+      bool levelLoad = read == 0;
+      for (int o = 0; o < RendererOwnerCount; ++o)
+        levelLoad |= reading.Renderers[o] != m_BatchRenderers[o];
+      levelLoad |= reading.FirstChunks < m_BatchFirstChunks || reading.FirstBatches < m_BatchFirstBatches;
+      if (levelLoad)
+        ForgetAllHolds();
+      for (int o = 0; o < RendererOwnerCount; ++o)
+        m_BatchRenderers[o] = reading.Renderers[o];
+      m_BatchFirstChunks = reading.FirstChunks;
+      m_BatchFirstBatches = reading.FirstBatches;
+    }
+
+    // GAME > Level streaming > Room for the whole city (the batch spread),
+    // changed in the menu (or by the config while it couldn't be switched):
+    // switched when a scan finds no renderer object, or every one's
+    // category 0 still in its first batch and well short of where the
+    // picking changes (BatchSpreadSwitchSafe). Not otherwise: the add's hook
+    // (hBatchAdd, PickBatch) keeps a first batch that's already past its fill
+    // bytes' room (1748 chunks), so switched on with more than that in it, it
+    // would run on to the 2048-chunk crash while the tools count the spread's
+    // room; and switched off while category 0's other batches are in use, its
+    // first batch would grow past 1748 again, its fill bytes over the second
+    // batch's start. Whether a level load starts the renderer's batches over
+    // isn't known (no hook on its constructor or teardown); a renderer made
+    // between the scan and the switch starts with its batches empty (its
+    // constructor zeroes them). Not before the config has been read (the
+    // camera update runs before the tools' set-up has read it and hooked
+    // the add).
+    if (read >= 0 && m_BatchSpreadConfigRead && !m_BatchSpreadMissing && m_BatchSpreadWanted != util::hooks::BatchSpread())
+    {
+      int from = util::hooks::BatchSpread(), to = m_BatchSpreadWanted;
+      if (read == 0)
+        SwitchBatchSpread(to, "with no level loaded");
+      else if (BatchSpreadSwitchSafe(reading, from, to))
+        SwitchBatchSpread(to, "with the renderer's first draw batch still well short of it");
+    }
     m_BatchScanTick = now;
   }
-  // The batch, or the renderer's instance list if that's fuller (with the
-  // batches spread their room is far more than the list's)
-  float batchFill = (float)m_BatchInstances / (float)BatchCapacity();
+  // The fullest category for its own room (see CategoryRoom), or the
+  // renderer's instance list if that's fuller (with the batches spread
+  // category 0's room is far more than the list's)
+  float batchFill = m_BatchFill;
+  m_BatchListFuller = m_RendererRoom > 0 && (float)m_RendererInstances / (float)m_RendererRoom > batchFill;
   if (m_RendererRoom > 0 && (float)m_RendererInstances / (float)m_RendererRoom > batchFill)
     batchFill = (float)m_RendererInstances / (float)m_RendererRoom;
-  int batchNow = m_BatchInstances;
+  // Arriving zones: the most instances in any one category
+  int batchNow = m_BatchArriving;
   if (batchNow > g_BatchMark + BatchBurst)
   {
     g_BatchMark = batchNow;
@@ -7777,20 +8242,99 @@ void CameraManager::WatchInstanceLists()
   g_BatchSettleFrom = batchLimit - BatchSettleBelow;
   int batchPressure = batchFill >= BatchTakeAllFrom(batchLimit) ? 3 :
     (batchFill >= BatchTakeAwayFrom(batchLimit) ? 2 : (batchFill >= batchLimit ? 1 : 0));
-  // Logged when it goes higher than before, until it's well back under the
-  // first level (it goes up and down as zones load and unload)
-  if (batchPressure > m_BatchPressureLogged && !m_StreamUnrestricted)
-  {
-    util::log::Warning("The renderer's fullest draw batch has %d of its %d instances, its instance list %d of %d: the camera's extra zones are %s",
-      (int)m_BatchInstances, BatchCapacity(), (int)m_RendererInstances, (int)m_RendererRoom,
-      batchPressure >= 3 ? "all taken away" : (batchPressure == 2 ? "taken away" : "held back"));
+  // Any one batch near the end of its own chunk pointers (BatchSafeChunks,
+  // where the game crashes), whatever its category's room says: taken away
+  // from the same top levels, so that acts before it gets there and not only
+  // afterwards (the overflow above). A spread batch is full at the spread's
+  // chunks, at most 1748 of its 2048 (85 %), so only from the take-away level.
+  float crashFill = m_BatchCrashFill;
+  int crashPressure = crashFill >= BatchTakeAllFrom(BatchLimitFixed) ? 3 :
+    (crashFill >= BatchTakeAwayFrom(BatchLimitFixed) ? 2 : 0);
+  if (crashPressure > batchPressure)
+    batchPressure = crashPressure;
+  // Logged the first time it goes over a level (since it was last well back
+  // under the first: it goes up and down as zones load and unload); while it
+  // goes on going over them again, a summary at most every
+  // BatchLogSummaryMs instead of a warning each time (a tester's log had 80
+  // of them in 10 minutes, in pairs)
+  bool rise = batchPressure > m_BatchPressureLogged && !m_StreamUnrestricted;
+  if (rise)
     m_BatchPressureLogged = batchPressure;
-  }
   else if (batchFill < batchLimit - 0.1f)
     m_BatchPressureLogged = 0;
+  if (rise && !m_BatchLogTick)
+  {
+    if (m_BatchListFuller)
+      util::log::Warning("The renderer's instance list has %d of its %d (all its draw batches; the fullest category %d of its "
+        "%d instances, %d chunks, at most %d of %d in one batch): the camera's extra zones are %s",
+        (int)m_RendererInstances, (int)m_RendererRoom, (int)m_BatchInstances, (int)m_BatchRoom, (int)m_BatchChunks,
+        (int)m_BatchMostChunks, BatchSafeChunks(),
+        batchPressure >= 3 ? "all taken away" : (batchPressure == 2 ? "taken away" : "held back"));
+    else
+      util::log::Warning("The renderer's fullest draw batch has %d of its %d instances (%d chunks, at most %d of %d in one batch), "
+        "its instance list %d of %d: the camera's extra zones are %s",
+        (int)m_BatchInstances, (int)m_BatchRoom, (int)m_BatchChunks, (int)m_BatchMostChunks, BatchSafeChunks(),
+        (int)m_RendererInstances, (int)m_RendererRoom,
+        batchPressure >= 3 ? "all taken away" : (batchPressure == 2 ? "taken away" : "held back"));
+    m_BatchLogTick = now;
+    m_BatchLogRises = 0;
+    m_BatchLogHighest = 0;
+    m_BatchLogLowest = m_BatchLogFullest = batchFill;
+    m_BatchLogTakeAways = g_TakeAways;
+  }
+  else if (m_BatchLogTick)
+  {
+    if (rise)
+    {
+      ++m_BatchLogRises;
+      if (batchPressure > m_BatchLogHighest)
+        m_BatchLogHighest = batchPressure;
+    }
+    if (batchFill < m_BatchLogLowest) m_BatchLogLowest = batchFill;
+    if (batchFill > m_BatchLogFullest) m_BatchLogFullest = batchFill;
+    if (now - m_BatchLogTick >= BatchLogSummaryMs)
+    {
+      int takeAways = g_TakeAways - m_BatchLogTakeAways;
+      if (m_BatchLogRises > 0 || takeAways > 0)
+      {
+        util::log::Warning("The renderer's draw batches in the last %d s: the camera's extra zones were held back or taken away "
+          "%d more times (at most: %s), %d of the tools' zone points taken away for room (at any of the limits; %d held out "
+          "now), between %.0f %% and %.0f %% full (the fuller of the fullest category and the instance list), now %d of %d "
+          "instances (%s)",
+          (int)((now - m_BatchLogTick) / 1000), m_BatchLogRises,
+          m_BatchLogHighest >= 3 ? "all taken away" : (m_BatchLogHighest == 2 ? "taken away" : (m_BatchLogHighest == 1 ? "held back" : "none")),
+          takeAways, CountHeldOut(), m_BatchLogLowest * 100.f, m_BatchLogFullest * 100.f,
+          m_BatchListFuller ? (int)m_RendererInstances : (int)m_BatchInstances, m_BatchListFuller ? (int)m_RendererRoom : (int)m_BatchRoom,
+          m_BatchListFuller ? "the renderer's instance list, all its batches" : "the fullest category's draw batches");
+        m_BatchLogTick = now;
+        m_BatchLogRises = 0;
+        m_BatchLogHighest = 0;
+        m_BatchLogLowest = m_BatchLogFullest = batchFill;
+        m_BatchLogTakeAways = g_TakeAways;
+      }
+      else
+        m_BatchLogTick = 0; // quiet that long: the next time is a warning again
+    }
+  }
   m_BatchPressure = batchPressure;
   if (batchPressure > arenaPressure)
     arenaPressure = batchPressure;
+
+  // How close the fullest limit is to where the tools hold back (1: at its
+  // first level), for the foci held out (see FocusHold): the draw batch (or
+  // the renderer's instance list), the meshes and the model instance lists.
+  // Not the renderer's instance memory: its use doesn't go down within a
+  // level, so past the release level every focus held out would stay out for
+  // the rest of it (its own pressure holds every add back from its 70 % on
+  // anyway, and a focus held out comes back only with no pressure at all)
+  float limitUse = batchLimit > 0.f ? batchFill / batchLimit : 0.f;
+  float meshUse = (float)inUse / (float)MeshesStopAdding();
+  if (meshUse > limitUse)
+    limitUse = meshUse;
+  float listUse = listFill / 0.8f;   // its first level (listPressure, above)
+  if (listUse > limitUse)
+    limitUse = listUse;
+  g_LimitUse = limitUse;
 
   // Unrestricted: the renderer's two limits are only shown, the camera's
   // zones load past them (the user's call, it can crash the game)
@@ -8143,13 +8687,13 @@ void CameraManager::DescribeState(char* buffer, size_t size)
   // For the crash note: no lock, these are only read. Cut short rather than
   // fail if it's ever longer than the buffer (in a crash handler).
   _snprintf_s(buffer, size, _TRUNCATE, "camera %s, track %s, follow Faith %s, follow object %s 0x%I64X, world around camera %s "
-    "(distance %.0f, zone slots %d of %d, meshes in use %d of %d, most %d, table end %d, model instances %d of %d, renderer instance memory %.1f of %d MB, fullest draw batch %d of %d in %d chunks, renderer instances %d of %d, held back from %.0f %%%s), Faith's body %s, Fix LOD %s, shadow distance %.0f, small object culling %s %.2f, "
+    "(distance %.0f, zone slots %d of %d, meshes in use %d of %d, most %d, table end %d, model instances %d of %d, renderer instance memory %.1f of %d MB, fullest draw batch %d of %d in %d chunks, renderer instances %d of %d, held back from %.0f %%%s, batches spread from %d chunks), Faith's body %s, Fix LOD %s, shadow distance %.0f, small object culling %s %.2f, "
     "camera at %.1f %.1f %.1f",
     m_CameraEnabled ? "on" : "off", m_TrackPlayer.IsPaused() ? "paused" : (m_TrackPlayer.IsPlaying() ? "playing" : "stopped"),
     m_AttachToFaith ? "on" : "off", m_AttachObject ? attach::ClassName(m_AttachTarget.Class) : "none", m_AttachObject ? m_AttachTarget.Entity : 0,
     m_StreamAroundCamera ? "on" : "off", m_StreamDistance, (int)m_StreamSlotsPeak, ZoneSlotCount(), (int)m_MeshCount, MeshCapacity(), (int)m_MeshPeak, (int)m_MeshHighWater, m_InstanceInUse[0], m_InstanceCapacity[0],
-    m_ArenaUsed / 1048576.0, (int)(m_ArenaSize >> 20), (int)m_BatchInstances, BatchCapacity(), (int)m_BatchChunks, (int)m_RendererInstances, (int)m_RendererRoom,
-    m_BatchLimit * 100.f, m_StreamUnrestricted ? ", UNRESTRICTED" : "", m_ThirdPersonApplied ? "switched" : "normal",
+    m_ArenaUsed / 1048576.0, (int)(m_ArenaSize >> 20), (int)m_BatchInstances, (int)m_BatchRoom, (int)m_BatchChunks, (int)m_RendererInstances, (int)m_RendererRoom,
+    m_BatchLimit * 100.f, m_StreamUnrestricted ? ", UNRESTRICTED" : "", util::hooks::BatchSpread(), m_ThirdPersonApplied ? "switched" : "normal",
     m_LodFix ? "on" : "off", m_ShadowDistance, m_CullOverride ? "on" : "off", m_CullScale,
     m_Camera.Position.x, m_Camera.Position.y, m_Camera.Position.z);
 }
@@ -8480,6 +9024,50 @@ void CameraManager::DrawGameUI()
   ImGui::SectionHeading("Level streaming");
   if (m_pAddZoneFocus && m_pRemoveZoneFocus)
   {
+    // Room for the whole city: the renderer's draw batches spread (see
+    // BatchSpreadDefault), on by default, switched only with no renderer
+    // there or with every renderer's category 0 still in its first batch and
+    // well short of where the picking changes (BatchSpreadSwitchSafe, see
+    // WatchInstanceLists)
+    if (m_BatchSpreadMissing)
+    {
+      // The room as it is: without the wider handle the first 1024 chunks'
+      // share, with it but the add not hooked one batch's 1748 (CategoryRoom)
+      char missingHelp[512];
+      sprintf_s(missingHelp, "The renderer's draw batches can't be spread with this game build (the tools couldn't widen "
+        "its batch handle or don't know its add), so it keeps the game's one batch, room for %d instances: with more "
+        "of the city than that the camera's extra zones and the Always districts are held back.", CategoryRoom(0));
+      ImGui::TextDisabled("Room for the whole city: not with this game build");
+      ImGui::HelpMarker(missingHelp);
+    }
+    else
+    {
+      bool spreadOn = m_BatchSpreadWanted > 0;
+      if (ImGui::Checkbox("Room for the whole city", &spreadOn))
+      {
+        m_BatchSpreadWanted = spreadOn ? m_BatchSpreadOn : 0;
+        configChanged = true;
+        if (m_BatchSpreadWanted == util::hooks::BatchSpread())
+          util::log::Write("Room for the whole city %s in the menu: as it is now", spreadOn ? "on" : "off");
+        else
+          util::log::Write("Room for the whole city %s in the menu: switched once the renderer's draw batches allow it",
+            spreadOn ? "on" : "off");
+      }
+      ImGui::HelpMarker("The renderer files what it draws in draw batches. The game only ever uses the first of the "
+        "nine it has, with room for 111872 instances: far less than the whole city needs, so the tools hold the "
+        "camera's extra zones and the Always districts back well before it's full. On, what doesn't fit there goes "
+        "on into the other eight. Off, as the game has it.\n"
+        "Switched on or off, it takes effect only while the renderer's first draw batch is still well short of where "
+        "the spread starts and its other batches have never been used: the tools check when the game starts and again "
+        "while it runs, and CT.log says when it's switched. (Whether a level load starts the batches over "
+        "isn't known.)");
+      if (m_BatchSpreadWanted != util::hooks::BatchSpread())
+      {
+        ImGui::SameLine();
+        ImGui::TextDisabled(spreadOn ? "(on once the draw batches allow it)" : "(off once the draw batches allow it)");
+      }
+    }
+
     bool streamAroundCamera = m_StreamAroundCamera;
     if (ImGui::Checkbox("Load the world around the camera", &streamAroundCamera))
     {
@@ -8487,18 +9075,64 @@ void CameraManager::DrawGameUI()
       configChanged = true;
       util::log::Write("Loading the world around the camera %s", streamAroundCamera ? "enabled" : "disabled");
     }
-    if (m_StreamAroundCamera)
+    // The renderer's draw batch: how full it is, and whether it ran past
+    // its room
+    auto drawBatchLines = [&]() {
+      // (with the batches spread the renderer's instance list fills first)
+      bool listFuller = m_BatchListFuller;
+      const char* fullName = listFuller ? "Renderer instances (all its batches)" : "Renderer draw batch";
+      int fullNow = listFuller ? (int)m_RendererInstances : (int)m_BatchInstances;
+      int fullRoom = listFuller ? (int)m_RendererRoom : (int)m_BatchRoom;
+      if (m_BatchPressure >= 1 && m_StreamUnrestricted)
+        ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f), "%s: %d of %d instances, nearly full: NOT held back (unrestricted)",
+          fullName, fullNow, fullRoom);
+      else if (m_BatchPressure >= 1)
+        ImGui::TextColored(ImVec4(1.f, 0.8f, 0.2f, 1.f), "%s: %d of %d instances, nearly full: the camera's extra zones are held back",
+          fullName, fullNow, fullRoom);
+      else
+        ImGui::TextDisabled("Renderer draw batch: %d of %d instances (the fullest, %d chunks, at most %d of %d in one batch)",
+          (int)m_BatchInstances, (int)m_BatchRoom, (int)m_BatchChunks, (int)m_BatchMostChunks, BatchSafeChunks());
+      if (m_RendererRoom > 0)
+        ImGui::TextDisabled("Renderer instances: %d of %d (the fullest renderer, all its batches)",
+          (int)m_RendererInstances, (int)m_RendererRoom);
+      if (m_BatchOverflowed)
+      {
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f), "The draw batch ran past its room (one batch at %d chunks): "
+          "the game can crash from here on. Restart it before going on.", (int)m_BatchMostChunks);
+        ImGui::PopTextWrapPos();
+      }
+    };
+    // The districts are shown with it off too while any of them is Always or
+    // Never, or the real Shard is streamed from anywhere: those apply with it
+    // on or off (they were out of sight then, and couldn't be put back)
+    bool districtsSet = AnyDistrictSet() || m_StreamRealShard;
+    if (m_StreamAroundCamera || districtsSet)
     {
       ImGui::Indent();
-      float streamDistance = m_StreamDistance;
-      float maxDistance = m_StreamInView ? MaxStreamDistanceInView : MaxStreamDistance;
-      if (streamDistance > maxDistance) streamDistance = maxDistance;
-      if (ImGui::SliderFloat("Stream distance", &streamDistance, 0.f, maxDistance,
-        streamDistance > 1.f ? "%.0f m" : "nearby zones only"))
+      if (m_StreamAroundCamera)
       {
-        m_StreamDistance = streamDistance < 10.f ? 0.f : streamDistance;
-        configChanged = true;
+        float streamDistance = m_StreamDistance;
+        float maxDistance = m_StreamInView ? MaxStreamDistanceInView : MaxStreamDistance;
+        if (streamDistance > maxDistance) streamDistance = maxDistance;
+        if (ImGui::SliderFloat("Stream distance", &streamDistance, 0.f, maxDistance,
+          streamDistance > 1.f ? "%.0f m" : "nearby zones only"))
+        {
+          m_StreamDistance = streamDistance < 10.f ? 0.f : streamDistance;
+          configChanged = true;
+        }
       }
+      else
+      {
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("Nothing extra loads around the camera, but what's set below (districts on Always or "
+          "Never, the real Shard from anywhere) still applies, with the camera on or off.");
+        ImGui::PopTextWrapPos();
+        if (m_InstanceFill >= 0.f && m_ArenaSize > 0)
+          drawBatchLines();
+      }
+      if (m_StreamAroundCamera && !m_CameraEnabled && districtsSet && m_InstanceFill >= 0.f && m_ArenaSize > 0)
+        drawBatchLines();
       if (m_CameraEnabled && m_StreamAroundCamera)
       {
         float fill = m_InstanceFill;
@@ -8526,25 +9160,7 @@ void CameraManager::DrawGameUI()
                 usedMb, sizeMb);
             else
               ImGui::TextDisabled("Renderer instance memory: %.1f of %d MB", usedMb, sizeMb);
-            if (m_BatchPressure >= 1 && m_StreamUnrestricted)
-              ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f), "Renderer draw batch: %d of %d instances, nearly full: NOT held back (unrestricted)",
-                (int)m_BatchInstances, BatchCapacity());
-            else if (m_BatchPressure >= 1)
-              ImGui::TextColored(ImVec4(1.f, 0.8f, 0.2f, 1.f), "Renderer draw batch: %d of %d instances, nearly full: the camera's extra zones are held back",
-                (int)m_BatchInstances, BatchCapacity());
-            else
-              ImGui::TextDisabled("Renderer draw batch: %d of %d instances (the fullest, %d chunks, at most %d of %d in one batch)",
-                (int)m_BatchInstances, BatchCapacity(), (int)m_BatchChunks, (int)m_BatchMostChunks, BatchSafeChunks());
-            if (m_RendererRoom > 0)
-              ImGui::TextDisabled("Renderer instances: %d of %d (the fullest renderer, all its batches)",
-                (int)m_RendererInstances, (int)m_RendererRoom);
-            if (m_BatchOverflowed)
-            {
-              ImGui::PushTextWrapPos(0.f);
-              ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f), "The draw batch ran past its room (%d of %d chunks): "
-                "the game can crash from here on. Restart it before going on.", (int)m_BatchMostChunks, BatchSafeChunks());
-              ImGui::PopTextWrapPos();
-            }
+            drawBatchLines();
             // Hold back from (m_BatchLimit): taken out of the menu and the
             // config (2026-11-01), always BatchLimitFixed (80 %)
           }
@@ -8557,14 +9173,17 @@ void CameraManager::DrawGameUI()
       }
       // Unrestricted (m_StreamUnrestricted, past the renderer's limits): taken
       // out of the menu and the config (2026-11-01), always off
-      if (ImGui::Checkbox("Only where the camera looks", &m_StreamInView))
+      if (m_StreamAroundCamera)
       {
-        if (!m_StreamInView && m_StreamDistance > MaxStreamDistance)
-          m_StreamDistance = MaxStreamDistance;
-        configChanged = true;
+        if (ImGui::Checkbox("Only where the camera looks", &m_StreamInView))
+        {
+          if (!m_StreamInView && m_StreamDistance > MaxStreamDistance)
+            m_StreamDistance = MaxStreamDistance;
+          configChanged = true;
+        }
+        configChanged |= ImGui::Checkbox("Load ahead of the camera", &m_StreamAhead);
+        configChanged |= ImGui::Checkbox("Keep the track's path loaded", &m_StreamTrack);
       }
-      configChanged |= ImGui::Checkbox("Load ahead of the camera", &m_StreamAhead);
-      configChanged |= ImGui::Checkbox("Keep the track's path loaded", &m_StreamTrack);
       // The districts, always shown (no fold-out)
       ImGui::SubHeading("Districts");
       configChanged |= DrawDistrictList();
@@ -9022,11 +9641,57 @@ void CameraManager::ReadConfig(INIReader* pReader)
   if (m_StreamDistance < 0) m_StreamDistance = 0;
   float maxStreamDistance = m_StreamInView ? MaxStreamDistanceInView : MaxStreamDistance;
   if (m_StreamDistance > maxStreamDistance) m_StreamDistance = maxStreamDistance;
-  // Test setting, not in the menu: the renderer's first draw batch only up to
-  // this many chunks, then its unused ones (0 off; see hBatchAdd)
-  util::hooks::SetBatchSpread((int)pReader->GetInteger("Misc", "BatchSpreadChunks", 0));
-  if (util::hooks::BatchSpread() > 0)
-    util::log::Write("Test setting: the renderer's draw batches are spread from %d chunks (config)", util::hooks::BatchSpread());
+  // GAME > Level streaming > Room for the whole city: category 0 of the
+  // renderer's draw batches goes on into its unused batches past this many
+  // chunks each (0 off, at most 1748; see hBatchAdd and BatchSpreadDefault).
+  // A test setting until 2.0.1 (off by default, not in the menu). Only with
+  // the wider handle and the add hooked (Hooks.cpp), otherwise it stays off.
+  // Read once, when the tools load (Main::LoadConfig, after the hooks).
+  {
+    int spread = (int)pReader->GetInteger("Misc", "BatchSpreadChunks", BatchSpreadDefault);
+    if (spread < 0) spread = 0;
+    if (spread > BatchFillRoomChunks) spread = BatchFillRoomChunks;
+    m_BatchSpreadOn = spread > 0 ? spread : BatchSpreadDefault;
+    m_BatchSpreadWanted = spread;
+    m_BatchSpreadMissing = !util::offsets::BatchChunkIndexWidened() || !util::hooks::BatchSpreadHooked();
+    if (m_BatchSpreadMissing)
+    {
+      if (spread > 0)
+        util::log::Write("Room for the whole city: not with this game build (the renderer's draw batches can't be spread "
+          "without the wider handle and the add's hook), one batch as the game has it");
+    }
+    else
+    {
+      // Switched now if it can be (see WatchInstanceLists): with no renderer
+      // object there, or every one's category 0 still in its first batch
+      // and well short of where the picking changes (the game's first level
+      // may already be there when the config is read: a tester's 2.0.0 log
+      // had its three physics worlds made before it). Otherwise the scan
+      // switches it once it can.
+      BatchReading reading;
+      int read = IsRenderArenaBuild() ? ReadFullestBatch(reading) : 0;
+      if (read == 0)
+        SwitchBatchSpread(spread, "the config, before any level");
+      else if (read > 0 && BatchSpreadSwitchSafe(reading, util::hooks::BatchSpread(), spread))
+        SwitchBatchSpread(spread, "the config, the renderer's first draw batch still well short of it");
+      else if (spread != util::hooks::BatchSpread() && read > 0)
+        util::log::Write("Room for the whole city %s from the config: not yet (the renderer's first draw batch has %d chunks, "
+          "%d batches in use), once the draw batches allow it", spread > 0 ? "on" : "off", reading.FirstChunks,
+          reading.FirstBatches);
+      else if (spread != util::hooks::BatchSpread())
+        util::log::Write("Room for the whole city %s from the config: not yet (the renderer's draw batches couldn't be "
+          "read), once the draw batches allow it", spread > 0 ? "on" : "off");
+      // These renderer objects aren't a level load for the scan
+      if (read > 0 && !reading.Partial)
+      {
+        for (int o = 0; o < RendererOwnerCount; ++o)
+          m_BatchRenderers[o] = reading.Renderers[o];
+        m_BatchFirstChunks = reading.FirstChunks;
+        m_BatchFirstBatches = reading.FirstBatches;
+      }
+    }
+    m_BatchSpreadConfigRead = true;
+  }
 
   m_MotionBlurOverride = pReader->GetBoolean("Misc", "MotionBlurOverride", false);
   m_MotionBlurEnable = pReader->GetBoolean("Misc", "MotionBlurEnable", true);
@@ -9168,8 +9833,11 @@ const std::string CameraManager::GetConfig()
     config += std::string(faith_outfit::PartSetting(part)) + " = " + (faith_outfit::GetPart(part) ? "true" : "false") + "\n";
   config += std::string("SolidStreet = ") + (m_SolidStreet ? "true" : "false") + "\n";
   config += "StreamDistance = " + std::to_string(m_StreamDistance) + "\n";
-  if (util::hooks::BatchSpread() > 0)
-    config += "BatchSpreadChunks = " + std::to_string(util::hooks::BatchSpread()) + "\n";
+  // Room for the whole city: only when it isn't the default (so the default
+  // can change), what was chosen even before it's switched (with no level
+  // loaded, at the latest the next game start)
+  if (m_BatchSpreadWanted != BatchSpreadDefault)
+    config += "BatchSpreadChunks = " + std::to_string((int)m_BatchSpreadWanted) + "\n";
   config += "\n";
   config += "[Replay]\n";
   config += std::string("Loop = ") + (m_Replay.IsLooping() ? "true" : "false") + "\n";

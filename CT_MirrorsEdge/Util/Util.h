@@ -49,6 +49,8 @@ namespace util
     // 1748; see hBatchAdd). Stays 0 if the add isn't hooked.
     void SetBatchSpread(int chunks);
     int BatchSpread();
+    // Whether the add is hooked (without it the spread stays 0)
+    bool BatchSpreadHooked();
 
     // From the window procedure: while hold is on the game's ShowCursor calls
     // on this thread only change a count of its own and the cursor stays

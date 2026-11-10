@@ -179,9 +179,10 @@ namespace
     // so the snow came from one side; the user: "Why does snow come from only one direction?")
     float SnowWind{ 0.5f };
     // A blizzard (2026-10-26, the user: "blizzard tick doesn't work anymore": it gave x 1.5 flakes up to a cap of
-    // 0.95, so with the amount at its most it added nothing): the intensity x 1.8 (up to 3), three times the wind,
-    // the flakes streaked by it, and the snowy look's fog on with it, seen through 250 m at most (a blizzard is snow
-    // and wind with a quarter mile or less to see).
+    // 0.95, so with the amount at its most it added nothing): the intensity x 1.8, at least 5 and up to 7.5
+    // (SnowIntensityNow), three times the wind and at least 12 m/s, the flakes streaked by it, the falling snow's
+    // haze x 3.4, and the snowy look on with it, its fog 1.5 times thicker and seen through 120 m at most (GiveLook;
+    // a blizzard is snow and wind with a quarter mile or less to see).
     bool Blizzard{ false };
     bool SnowKeepOut{ true };        // falls only where the weather's squares know the sky is open
     float SnowCover{ 1.f };          // snow on the ground: how much of what faces up it covers once it's all settled (0.85 until 2026-11-01 18:xx: patchy even once settled, its patches half see-through until 8 cm had piled; the user: "make the snow on the ground effect stronger")
@@ -4042,6 +4043,9 @@ namespace
     bool Applied;
     float Base[LookFloats];
     float Written[LookFloats];
+    // The look last given was the snowy one (for the take-back's line: by then
+    // the look given to GiveLook may say rainy, its Snowy gone with the snow)
+    bool Snowy;
   };
   LookTrack g_LookViews[MostLookViews]{};   // game thread
   bool g_LookLogged = false;
@@ -4402,12 +4406,15 @@ namespace
         t.Written[LookFloatIndex(LookHeightFogSeen)]);
     }
     bool takenBack = !active && t.Applied;
+    if (active)
+      t.Snowy = snowy;
     t.Applied = active;
     t.State = state;
     if (takenBack)
     {
       g_LookLogged = false;
-      util::log::Write("Weather: rainy city look taken back (state 0x%I64X), the game's values back", state);
+      util::log::Write("Weather: %s city look taken back (state 0x%I64X), the game's values back", t.Snowy ? "snowy" :
+        "rainy", state);
     }
     return takenBack;
   }

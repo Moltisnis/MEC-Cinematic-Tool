@@ -902,8 +902,18 @@ void util::hooks::UpdateSpotSounds(bool on, float const* camera)
       continue;
     Event event{ 0, sends[i].Id, 0 };
     oSoundEntityEvent(sends[i].Entity, (__int64)&event);
-    util::log::Write("Spot sounds: %s %s at %.1f %.1f %.1f (the camera %.0f m away)", sends[i].Id == SpotStartEvent ? "started" : "stopped",
-      sends[i].Name, sends[i].Position[0], sends[i].Position[1], sends[i].Position[2], sends[i].Distance);
+    // (a Distance below 0: no camera given, the tools' camera is off, so it's
+    // a stop and there's no distance to tell. The buffer holds even FLT_MAX's
+    // 39 digits, and the text is cut, not failed, if it ever didn't: sprintf_s
+    // would end the game through the CRT's invalid-parameter handler, and a
+    // stop has no upper bound on the distance)
+    char away[64];
+    if (sends[i].Distance >= 0.f)
+      _snprintf_s(away, _TRUNCATE, "the camera %.0f m away", sends[i].Distance);
+    else
+      strcpy_s(away, "the camera off");
+    util::log::Write("Spot sounds: %s %s at %.1f %.1f %.1f (%s)", sends[i].Id == SpotStartEvent ? "started" : "stopped",
+      sends[i].Name, sends[i].Position[0], sends[i].Position[1], sends[i].Position[2], away);
   }
   if (on && !wasOn)
     util::log::Write("Spot sounds: on, %d spot sounds in the level, %d of them with a place", count, placed);
@@ -9920,6 +9930,15 @@ namespace
 
   std::atomic<int> g_BatchSpreadChunks{ 0 }; // 0: off
   std::atomic<bool> g_BatchSpreadLogged{ false };
+  // The add's hook made and enabled (Init; MinHook gives the original's
+  // pointer before it enables the hook, so that alone doesn't say)
+  bool g_BatchAddHooked = false;
+  // The spread's chunks when it was last on: a category already in its
+  // other batches when it's switched off (an add between the tools' read
+  // and the switch, see CameraManager's BatchSpreadSwitchSafe) goes on as
+  // it was, so its first batch never grows past 1748 chunks over the next
+  // one's start
+  std::atomic<int> g_BatchSpreadLast{ 0 };
 
   // The first batch of the category that can take an instance: one with a
   // chunk that isn't full or fewer chunks than the spread allows, else the
@@ -9951,6 +9970,8 @@ namespace
 void __fastcall hBatchAdd(__int64 pContext, __int64* pCategories, unsigned int* pHandles, __int64 pRecords, __int64 pInstance, int category)
 {
   int limit = g_BatchSpreadChunks;
+  if (limit <= 0 && category == 0 && *(int*)((BYTE*)pCategories[0] + AddCategoryBatchCount) > 1)
+    limit = g_BatchSpreadLast;   // (already in its other batches: they go on as they were)
   if (limit <= 0 || category != 0 || *(int*)(pInstance + AddInstanceHandleIndex) == -1)
   {
     oBatchAdd(pContext, pCategories, pHandles, pRecords, pInstance, category);
@@ -10002,12 +10023,19 @@ void util::hooks::SetBatchSpread(int chunks)
     chunks = 0;
   if (chunks > AddBatchFillRoom)
     chunks = AddBatchFillRoom;
-  g_BatchSpreadChunks = oBatchAdd ? chunks : 0;
+  g_BatchSpreadChunks = g_BatchAddHooked ? chunks : 0;
+  if (g_BatchSpreadChunks > 0)
+    g_BatchSpreadLast = g_BatchSpreadChunks.load();
 }
 
 int util::hooks::BatchSpread()
 {
   return g_BatchSpreadChunks;
+}
+
+bool util::hooks::BatchSpreadHooked()
+{
+  return g_BatchAddHooked;
 }
 
 // The reflection volumes' cubemaps: only 32 are kept. Every frame the
@@ -10596,9 +10624,9 @@ namespace
           "The Shard: the free camera left the area around it: its top streams out unless Faith is there (trigger 0x%I64X)",
           links - 0x30);
       else
-        util::log::Write(in ? "The Bauble: the free camera is in the area around it: the mall streams in (trigger 0x%I64X)" :
-          "The Bauble: the free camera left the area around it: the mall streams out unless Faith is there (trigger 0x%I64X)",
-          links - 0x30);
+        util::log::Write(in ? "The Bauble: the free camera is in the area around it: the trigger's version of it (the mall, "
+          "its collapse or its ruins) streams in (trigger 0x%I64X)" : "The Bauble: the free camera left the area around it: "
+          "the trigger's version of it streams out unless Faith is there (trigger 0x%I64X)", links - 0x30);
     }
     return in;
   }
@@ -10650,7 +10678,7 @@ void util::hooks::SetAreaTriggerCamera(bool cameraOn, bool outOfCity, float x, f
 // game streams is chosen by which of its camera triggers is enabled: their
 // Enabled comes from MathEntities on progression flags (layer48: the Shard's
 // #83 / #18 from flag #34, the Bauble's #53 / #1 / #37 from flags #2 and #47).
-// The trigger's event handler (vtable slot 10, 0x143232310) takes Enable
+// The trigger's event handler (vtable slot 4, 0x143232310) takes Enable
 // (0x8BA423E4: its update registered, 0x1432306F0, + 0x69 set) and Disable
 // (0xF90216B1: unregistered and, with the prefab's FireOnLeaveWhenDisable,
 // OnLeave for each player inside), reading nothing of the event but its id
@@ -10744,8 +10772,16 @@ namespace
 
   // CameraTriggerCodeKnown, read once before the set-up is hooked: the hook's
   // jump takes the place of the set-up's first bytes, so read after that the
-  // check fails (it did, build 120a8c6f160f, 2026-10-25 20:49: nothing switched)
-  bool g_CameraTriggerCodeOk = false;
+  // check fails (it did, build 120a8c6f160f, 2026-10-25 20:49: nothing switched).
+  // -1: not checked yet; 0: not the code the tools know, or its hook couldn't
+  // be made; 1: known and hooked. Given by util::hooks::Init, on its own
+  // thread, only once the set-up's hook is made: the CameraUpdate hook is made
+  // before it there, so the camera's update (UpdateLandmarkTriggers, through
+  // CameraManager) can run first and reads -1 meanwhile, which is start-up,
+  // not a failure (read as a plain false, that race gave a warning that the
+  // triggers' code wasn't known, though later in the same run their streaming
+  // switched, and the blinds' first line was never logged)
+  std::atomic<int> g_CameraTriggerCodeOk{ -1 };
 
   // The camera area triggers the game has set up (some may be gone since)
   std::mutex g_NotedTriggersMutex;
@@ -10847,7 +10883,7 @@ namespace
   // A landmark version's camera trigger (its prefab reference's Flags): on 1, off 0, not set up (yet) -1
   int LandmarkTriggerOn(unsigned int flags)
   {
-    if (!g_CameraTriggerCodeOk)
+    if (g_CameraTriggerCodeOk.load() != 1)
       return -1;
     CameraTriggerSeen seen[MaxCameraTriggers];
     int count = ReadCameraTriggers(seen, MaxCameraTriggers);
@@ -10870,27 +10906,36 @@ int util::hooks::BaubleMallTrigger()
 
 void util::hooks::UpdateLandmarkTriggers(bool unbroken, bool shardBackdropOut, int topBlinds)
 {
+  // Not checked yet (start-up, see g_CameraTriggerCodeOk): nothing done and
+  // nothing kept, so the first pass once it's known sees the settings as
+  // changes and logs them
+  int codeOk = g_CameraTriggerCodeOk.load();
+  if (codeOk < 0)
+    return;
+  // Not the code the tools know (or not hooked): Init's warning says what
+  // can't switch. The one thing only seen here, said once: the Shard's
+  // far-away sub-level wanted out (its fans can't be moved onto the real
+  // tower, see CameraManager, whose line says it streams out instead) but
+  // staying, so those fans stay in view up close
+  if (codeOk == 0)
+  {
+    static bool s_backdropWarned = false;
+    if (shardBackdropOut && !s_backdropWarned)
+    {
+      s_backdropWarned = true;
+      util::log::Warning("The Shard: its far-away sub-level can't be streamed out after all (the camera triggers can't be "
+        "switched, see the camera area triggers' set-up warning at start-up): its far-away fans stay in view up close");
+    }
+    return;
+  }
   static ULONGLONG s_last = 0;
-  static bool s_unbroken = false, s_out = false, s_warned = false, s_logged = false;
+  static bool s_unbroken = false, s_out = false, s_logged = false;
   static int s_blinds = 0;
   ULONGLONG now = GetTickCount64();
   bool changed = unbroken != s_unbroken || shardBackdropOut != s_out || topBlinds != s_blinds;
   if (!changed && now - s_last < LandmarkCheckMs)
     return;
   s_last = now;
-  if (!g_CameraTriggerCodeOk || !oCameraTriggerInit)
-  {
-    if ((unbroken || shardBackdropOut || topBlinds) && !s_warned)
-    {
-      s_warned = true;
-      util::log::Warning("The Shard and the Bauble: the camera triggers' code isn't what the tools know, their streaming "
-        "isn't switched (no Unbroken Shard and Bauble, no blinds choice, the Shard's far-away fans stay up close)");
-    }
-    s_unbroken = unbroken;
-    s_out = shardBackdropOut;
-    s_blinds = topBlinds;
-    return;
-  }
   if (unbroken != s_unbroken)
     util::log::Write("Unbroken Shard and Bauble %s", unbroken ? "on: their whole versions' streaming triggers on, the "
       "broken ones' off" : "off: their streaming triggers back as the game had them");
@@ -16343,7 +16388,10 @@ void util::hooks::Init()
   {
     BYTE* pAdd = (BYTE*)g_gameHandle + 0x36C3960;
     if (IsBatchAddCode(pAdd))
+    {
       CreateHook("BatchAdd", (__int64)pAdd, hBatchAdd, &oBatchAdd);
+      g_BatchAddHooked = oBatchAdd && m_CreatedHooks.count("BatchAdd") != 0;
+    }
     else
       util::log::Warning("The renderer's add isn't the code the tools know, its draw batches can't be spread");
   }
@@ -16399,12 +16447,20 @@ void util::hooks::Init()
     CreateHook("CameraTriggerVolumeTest", (__int64)g_gameHandle + LinkVolumeContainsRva, hLinkVolumeContains, &oLinkVolumeContains);
   else
     util::log::Warning("The camera area triggers' code isn't what the tools know: the Shard's top only streams in around Faith");
-  // The camera area triggers noted as they're set up (Unbroken Shard and Bauble)
-  g_CameraTriggerCodeOk = CameraTriggerCodeKnown();
-  if (g_CameraTriggerCodeOk)
+  // The camera area triggers noted as they're set up (Unbroken Shard and
+  // Bauble, Kruger's office blinds, Street level's Bauble boxes). Checked
+  // before the hook (its jump changes the bytes checked), the result given
+  // only once the hook is made: the camera's update may already be running
+  // (see g_CameraTriggerCodeOk)
+  bool triggerCodeKnown = CameraTriggerCodeKnown();
+  if (triggerCodeKnown)
     CreateHook("CameraTriggerInit", (__int64)g_gameHandle + CameraTriggerInitRva, hCameraTriggerInit, &oCameraTriggerInit);
-  else
-    util::log::Warning("The camera area triggers' set-up isn't the code the tools know: Unbroken Shard and Bauble can't work");
+  bool triggersHooked = triggerCodeKnown && oCameraTriggerInit && m_CreatedHooks.count("CameraTriggerInit") != 0;
+  g_CameraTriggerCodeOk = triggersHooked ? 1 : 0;
+  if (!triggersHooked)
+    util::log::Warning("The camera area triggers' set-up %s: Unbroken Shard and Bauble and the Shard office blinds (Kruger's "
+      "office) can't switch the game's streaming, and Street level makes no boxes for the Bauble's ruins or the whole mall's roofs",
+      triggerCodeKnown ? "couldn't be hooked" : "isn't the code the tools know");
 
   if (IsPhysicsWorldInitCode((BYTE*)g_gameHandle))
     CreateHook("PhysicsWorldInit", (__int64)g_gameHandle + PhysicsWorldInitRva, hPhysicsWorldInit, &oPhysicsWorldInit);

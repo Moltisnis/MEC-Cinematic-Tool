@@ -132,6 +132,10 @@ private:
   void ApplyMotionBlur();
   void ApplyCulling();
   void WatchInstanceLists();
+  // Room for the whole city: the renderer's draw batches spread from this
+  // many chunks (0 off), logged with when; only where it's safe (see
+  // WatchInstanceLists and ReadConfig)
+  void SwitchBatchSpread(int chunks, const char* when);
   void ApplyHairFix();
   void ApplyAnimationSmoothing();
   void ApplyBillboardDetail();
@@ -345,7 +349,7 @@ private:
   bool m_StreamUnrestricted{ false }; // past the renderer's limits (draw batch, instance memory): can crash
   std::atomic<float> m_BatchLimit{ 0.80f }; // draw batch fill the camera's extra zones are held back from (fixed, BatchLimitFixed)
   bool m_BatchLimitEditing{ false };
-  std::atomic<bool> m_BatchOverflowed{ false }; // the draw batch ran past its room this level
+  std::atomic<bool> m_BatchOverflowed{ false }; // a draw batch ran past its room this level
   std::atomic<int> m_BatchMostChunks{ 0 };
   std::atomic<int> m_RendererInstances{ 0 }; // the fullest renderer's instances, all its batches
   std::atomic<int> m_RendererRoom{ 0 };      // its instance list's room
@@ -399,10 +403,46 @@ private:
   std::atomic<long long> m_ArenaSize{ 0 };
   int m_ArenaPressureLogged{ 0 };
   std::atomic<int> m_BatchPressure{ 0 };          // the renderer's fullest draw batch (see RendererOwnersRva)
+  // The fullest category for its own room (CategoryRoom: category 0's
+  // spread, the others one batch): its instances, its room, how full
   std::atomic<int> m_BatchInstances{ 0 };
+  std::atomic<int> m_BatchRoom{ 111872 };
+  std::atomic<float> m_BatchFill{ 0.f };
   std::atomic<int> m_BatchChunks{ 0 };
+  int m_BatchArriving{ 0 };                       // the most instances in any one category (see BatchBurst)
+  float m_BatchCrashFill{ 0.f };                  // the fullest single batch against its chunk pointers' end
   int m_BatchPressureLogged{ 0 };
+  // The log at the limit: when the last warning or summary was written (0:
+  // none since it was last quiet), and what happened since (see
+  // WatchInstanceLists)
+  unsigned long long m_BatchLogTick{ 0 };
+  int m_BatchLogRises{ 0 };
+  int m_BatchLogHighest{ 0 };
+  float m_BatchLogLowest{ 0.f };
+  float m_BatchLogFullest{ 0.f };
+  int m_BatchLogTakeAways{ 0 };
   unsigned long long m_BatchScanTick{ 0 };
+  // GAME > Level streaming > Room for the whole city (the renderer's draw
+  // batches spread, [Misc] BatchSpreadChunks): what was chosen (0 off, else
+  // chunks; switched only with no renderer there or its first draw batch
+  // well short of it, see WatchInstanceLists), its chunks when ticked on,
+  // whether it can't be spread (no wider handle, or the add isn't hooked: it
+  // stays off), and whether the config has been read (the scan doesn't
+  // switch before; with m_Mutex)
+  std::atomic<int> m_BatchSpreadWanted{ 1700 };
+  int m_BatchSpreadOn{ 1700 };
+  std::atomic<bool> m_BatchSpreadMissing{ false };
+  bool m_BatchSpreadConfigRead{ false };
+  // The renderer's instance list is fuller (for its room) than the fullest
+  // category of draw batches: with the batches spread it's the limit that's
+  // reached first, and what the menu and the log name
+  std::atomic<bool> m_BatchListFuller{ false };
+  // At the last scan, for its guess at a level load (the renderer objects,
+  // and category 0's first batch's chunks and batches in use: the research
+  // only saw them grow while the renderer lives)
+  __int64 m_BatchRenderers[2]{};
+  int m_BatchFirstChunks{ 0 };
+  int m_BatchFirstBatches{ 0 };
   int m_InstanceCapacity[2]{};
   __int64 m_InstanceBegin[2]{};
   int m_InstanceReserveOriginal[2]{};

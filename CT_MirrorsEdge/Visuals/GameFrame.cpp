@@ -309,6 +309,13 @@ void gameframe::ForgetSceneDepths()
   }
 }
 
+void gameframe::ResetSceneDepths()
+{
+  for (auto& seen : g_SceneDepths)
+    seen.store(0, std::memory_order_relaxed);
+  g_SceneDepthNext = 0;
+}
+
 bool gameframe::Take(Frame& out)
 {
   out = Frame{};

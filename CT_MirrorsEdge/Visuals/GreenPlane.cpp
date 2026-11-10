@@ -576,6 +576,8 @@ bool greenplane::TakeFrameDepth(IDXGISwapChain* pSwapChain, ID3D11Device* pDevic
   out.Scale[1] = (float)depthDesc.Height / (float)back.Height;
   out.Width = back.Width;
   out.Height = back.Height;
+  out.DepthWidth = depthDesc.Width;
+  out.DepthHeight = depthDesc.Height;
   return true;
 }
 
