@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **GAME > Faith in the streets > Solid street: the Sky City reshape applies again** (the release check of the user's
+  11-10 14:04 run with C31482BE67B7 found it hadn't; the user chose to have 2.0.0 wait for the fix). Details in
+  Research_Ground_Level_2026-11-01.md section 27.
+  - In that run all six shapes (the base block, the north wedge, the four ceiling leaves) were logged "aren't as the
+    tools know them (left as they are)" and nothing was changed. Since the low ceiling entry below (9F8FF7F19543), each
+    shape's object was compared whole, from + 0x10 to its end, with the file's image, and the game fills a pointer into
+    each one when it loads the zone: + 0x20, the shape's properties (zone 55's file has exactly one pointer fixup inside
+    each of the six objects, there, to the mass properties stored right after it). The 01:16 build (BDED5CA8E39A),
+    which compared only the counts and the arrays, had changed the block and the wedge in the game.
+  - Now a shape's object is matched by its header's four count / offset pairs (+ 0x30 .. + 0x33, + 0x40 .. + 0x4B) and
+    everything from + 0x50 to its end. Nothing before + 0x30 and none of the header's other bytes is compared or
+    written: the counts are one store each (+ 0x40 8 bytes, + 0x30 and + 0x48 4 bytes; the + 0x38 word isn't written).
+  - The "aren't as the tools know them" line now says how many bodies couldn't be read and which byte first isn't as
+    the file has it, at each packfile's place (logged again if a later look first finds that byte). With diagnostics
+    on, a line lists the bytes the tools don't go by that the game has changed.
+  - The run's "no flush of its bodies' world in 2 s" lines each came 2 s into a game pause of over 2 s (the physics
+    doesn't flush while paused): harmless, left as they are.
+  - Offline checks: skysim, 1,311 checks on zone 55's real bytes, with new rounds where the game's own bytes are set (a
+    properties pointer, user data, flags, all 48 bytes the tools don't go by), a count, an offset or a shape's last
+    byte off, a root not 16-byte aligned, and unreadable bodies; the release build's source fails 335 of them, and four
+    loosened versions of the compare 101 - 278. holdsim all pass; perfsim's 120 s walk trace is the same as the
+    installed v14 build's (0E24BF212533F4EA). The diagnosis and the fix were each checked by independent agents, every
+    finding put to a skeptic; the review's findings (the log text, the header stores, the tests' gaps) are all fixed.
+  - Build 7BC3594EA5F0 (11-10 15:23, build.ps1 at Idle, GroundLevel.cpp only; GroundProps.ctpk unchanged): **INSTALLED**
+    15:24 (game folder, dist; the game closed). **Not tested in game.**
 - **GAME > Faith in the streets > Solid street: stand-ins for the Sky City hall's walk-through surfaces** (after the
   low ceiling entry's install below, the user, 2026-11-10: "Yes, all of them", to "Add stand-in boxes for the hall's walk-through
   surfaces?"). Data only: no source change. Details in Research_Ground_Level_2026-11-01.md section 26.

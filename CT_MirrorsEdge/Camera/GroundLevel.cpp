@@ -4058,7 +4058,8 @@ namespace
     struct ShapeState
     {
       bool Changed;                 // the tools' bytes on its object, as the last flush that looked at it found
-      bool WaitLogged, UnknownLogged, OtherLogged;
+      bool WaitLogged, UnknownLogged, OtherLogged, OtherBytesLogged;
+      bool DiffLogged;              // its "aren't as the tools know them" line has given a first byte not as the file's
     };
     struct MemberState
     {
@@ -4093,6 +4094,11 @@ namespace
       bool Fault, NoComponent;
       int AsFile[ShapeCount], AsTools[ShapeCount], Unknown[ShapeCount], Now[ShapeCount];
       int Other[ShapeCount];        // bodies in another world on a root of their own (looked at only, for the log)
+      int NotReadable[ShapeCount];  // of Unknown: bodies (or their records) that couldn't be read
+      bool NoWriter[ShapeCount];    // the client world's body couldn't be read: none looked at
+      bool HasDiff[ShapeCount];     // a root's object as neither image: Diff, the first byte (Differs) not as the file
+      int Diff[ShapeCount][2];      // has it at each packfile's distance (0 none, -1 not 16-byte aligned)
+      unsigned __int64 OtherBytes[ShapeCount];   // bytes the tools don't go by that aren't the file's (OtherBytes)
     };
     struct Renewal                  // a body whose caches its own world's next flushes renew (each world's in its own)
     {
@@ -4244,8 +4250,44 @@ namespace
       return shape >= 0x10000 && *(unsigned int const*)(body + BodyIdOffset) == id;
     }
 
+    // The bytes of an object the tools go by: its header's four arrays' counts and offsets (+ 0x30, + 0x40, + 0x44,
+    // + 0x48, 4 bytes each) and all of it from DataStart to its end (the arrays and the room between them). Not + 0x10 ..
+    // + 0x2F (flags, convex radius, user data, the properties pointer) nor the header's other bytes (+ 0x34 .. + 0x3F,
+    // + 0x4C .. + 0x4F): the game may set those after loading the file, and the write keeps them as they are. (The
+    // first in-game run of a compare of the whole object, 2026-11-10 14:05, found every body as neither image; the
+    // 01:16 build, which went by the counts and the arrays only, changed them.)
+    bool Counted(int at)
+    {
+      return (at >= 0x30 && at < 0x34) || (at >= 0x40 && at < 0x4C);
+    }
+    // The first byte (its offset in the object) of the ones the tools go by where the object isn't as an image has it;
+    // 0: none. Game memory: only inside __try.
+    int Differs(Shape const& s, __int64 obj, BYTE const* image)
+    {
+      for (int at = HeaderStart; at < DataStart; ++at)
+        if (Counted(at) && *(BYTE const*)(obj + at) != image[at - 0x10])
+          return at;
+      if (!memcmp((void const*)(obj + DataStart), image + DataStart - 0x10, s.Size - DataStart))
+        return 0;
+      for (int at = DataStart; at < s.Size; ++at)
+        if (*(BYTE const*)(obj + at) != image[at - 0x10])
+          return at;
+      return 0;
+    }
+    // The bytes before DataStart the tools don't go by that aren't as the file has them (bit at - 0x10). Game memory:
+    // only inside __try.
+    unsigned __int64 OtherBytes(Shape const& s, __int64 obj)
+    {
+      unsigned __int64 bits = 0;
+      for (int at = 0x10; at < DataStart; ++at)
+        if (!Counted(at) && *(BYTE const*)(obj + at) != s.File[at - 0x10])
+          bits |= 1ull << (at - 0x10);
+      return bits;
+    }
+
     // The shape's object at a root: 1 as the file has it, 2 as the tools make it, 0 neither (not the zone's root, or
-    // something else changed it); its place in obj. Game memory: only inside __try.
+    // something else changed it), in the bytes the tools go by (Counted, Differs); its place in obj. Game memory: only
+    // inside __try.
     int ObjectAt(Shape const& s, __int64 root, __int64& obj)
     {
       for (int pf = 0; pf < 2; ++pf)
@@ -4253,8 +4295,8 @@ namespace
         __int64 o = root + s.FromRoot[pf];
         if (o & 15)
           continue;
-        bool old = !memcmp((void const*)(o + 0x10), s.File, s.Size - 0x10);
-        bool made = !old && !memcmp((void const*)(o + 0x10), s.Tools, s.Size - 0x10);
+        bool old = !Differs(s, o, s.File);
+        bool made = !old && !Differs(s, o, s.Tools);
         if (old || made)
         {
           obj = o;
@@ -4271,11 +4313,25 @@ namespace
       _mm_store_si128((__m128i*)(obj + at), _mm_loadu_si128((__m128i const*)(image + at - 0x10)));
       std::atomic_signal_fence(std::memory_order_seq_cst);
     }
-    void Put8(__int64 obj, BYTE const* image, int at)
+    // (the header's counts and offsets (Counted) from the image, one store each: + 0x40 8 bytes (the plane and face
+    // counts together), + 0x30 and + 0x48 4 bytes; the header's other bytes (+ 0x34 .. + 0x3F, + 0x4C .. + 0x4F) are never
+    // written, so no byte the tools don't go by is)
+    void PutHeader(__int64 obj, BYTE const* image, int at)
     {
-      unsigned __int64 v;
-      memcpy(&v, image + at - 0x10, 8);
-      *(unsigned __int64 volatile*)(obj + at) = v;
+      if (at == 0x40)
+      {
+        unsigned __int64 v;
+        memcpy(&v, image + at - 0x10, 8);
+        *(unsigned __int64 volatile*)(obj + at) = v;
+      }
+      else if (at == 0x30 || at == 0x48)
+      {
+        unsigned int v;
+        memcpy(&v, image + at - 0x10, 4);
+        *(unsigned int volatile*)(obj + at) = v;
+      }
+      else
+        return;
       std::atomic_signal_fence(std::memory_order_seq_cst);
     }
     void Put4(__int64 obj, BYTE const* image, int at)
@@ -4290,7 +4346,8 @@ namespace
     // that keeps a read in between near the old shape or the new (Research section 25: the game's readers take the
     // counts from the header each time; a count read is the old or the new with either's arrays in its room).
     // Made: the vertices, the planes up, the faces and indices, then the counts. Back: the counts, the planes down, the
-    // faces and indices, the vertices. Game memory: only inside __try.
+    // faces and indices, the vertices. The counts: + 0x48 and + 0x30 (4 bytes each) and + 0x40 (8), nothing else of the
+    // header (PutHeader). Game memory: only inside __try.
     void Write(Shape const& s, __int64 obj, bool make)
     {
       BYTE const* to = make ? s.Tools : s.File;
@@ -4304,12 +4361,12 @@ namespace
         for (int at = l.Faces; at < l.End; at += 4)
           Put4(obj, to, at);
         for (int at = DataStart - 8; at >= HeaderStart; at -= 8)
-          Put8(obj, to, at);
+          PutHeader(obj, to, at);
       }
       else
       {
         for (int at = HeaderStart; at < DataStart; at += 8)
-          Put8(obj, to, at);
+          PutHeader(obj, to, at);
         for (int at = l.Faces - 16; at >= l.Planes; at -= 16)
           Put16(obj, to, at);
         for (int at = l.End - 4; at >= l.Faces; at -= 4)
@@ -4408,7 +4465,10 @@ namespace
       if (bodies <= 0 || bodies > gates::MaxBodies)
       {
         for (int k = 0; k < ShapeCount; ++k)
+        {
           a.Unknown[k] += r.Asked[k];
+          a.NotReadable[k] += r.Asked[k];
+        }
         return 1;
       }
       __int64 roots[gates::MaxBodies] = {}, havoks[gates::MaxBodies] = {};
@@ -4428,8 +4488,16 @@ namespace
         }
       if (clientListed && writer < 0)
       {
+        int unreadable = 0;
+        for (int b = 0; b < bodies; ++b)
+          unreadable += !ok[b];
         for (int k = 0; k < ShapeCount; ++k)
-          a.Unknown[k] += r.Asked[k] ? bodies : 0;
+          if (r.Asked[k])
+          {
+            a.Unknown[k] += bodies;
+            a.NotReadable[k] += unreadable;
+            a.NoWriter[k] = true;
+          }
         return 1;
       }
       for (int b = 0; b < bodies && writer < 0; ++b)
@@ -4470,11 +4538,23 @@ namespace
               Shape const& s = Shapes[k];
               __int64 obj = 0;
               state = ObjectAt(s, roots[b], obj);
+              if (state == 0 && !a.HasDiff[k])
+              {
+                // (for the log: the first byte not as the file has it, at each packfile's distance)
+                a.HasDiff[k] = true;
+                for (int pf = 0; pf < 2; ++pf)
+                {
+                  __int64 o = roots[b] + s.FromRoot[pf];
+                  a.Diff[k][pf] = (o & 15) ? -1 : Differs(s, o, s.File);
+                }
+              }
+              if (state != 0)
+                a.OtherBytes[k] |= OtherBytes(s, obj);
               if ((state == 1 && r.ToNew[k] && solidNow) || (state == 2 && r.ToOld[k]))
               {
                 bool make = state == 1;
                 Write(s, obj, make);
-                state = !memcmp((void const*)(obj + 0x10), make ? s.Tools : s.File, s.Size - 0x10) ? (make ? 2 : 1) : 0;
+                state = !Differs(s, obj, make ? s.Tools : s.File) ? (make ? 2 : 1) : 0;
                 written[b] = true;
                 ++a.Now[k];
               }
@@ -4493,7 +4573,10 @@ namespace
         if (!ok[b])
         {
           for (int k = 0; k < ShapeCount; ++k)
+          {
             a.Unknown[k] += r.Asked[k] && Shapes[k].Member == m;
+            a.NotReadable[k] += r.Asked[k] && Shapes[k].Member == m;
+          }
           continue;
         }
         if (!written[b])
@@ -4635,11 +4718,38 @@ namespace
               util::log::Write("Street level: %s: %d of its zone's bodies changed now; %d as the tools make it, %d as its "
                 "file has it, %d neither", s.Name, a.Now[k], asTools, asFile, unknown);
           }
-          if (unknown && !ss.UnknownLogged)
+          // (once, and once more if a later answer first gives the byte: an earlier one may only have had bodies that
+          // couldn't be read)
+          if (unknown && (!ss.UnknownLogged || (a.HasDiff[k] && !ss.DiffLogged)))
           {
             ss.UnknownLogged = true;
-            util::log::Write("Street level: %s: %d of its zone's bodies aren't as the tools know them (left as they are)",
-              s.Name, unknown);
+            ss.DiffLogged |= a.HasDiff[k];
+            char place[2][32];
+            for (int pf = 0; pf < 2; ++pf)
+              if (a.Diff[k][pf] < 0)
+                sprintf_s(place[pf], "not 16-byte aligned");
+              else
+                sprintf_s(place[pf], "+ 0x%X", a.Diff[k][pf]);
+            char read[96] = "", bytes[128] = "";
+            if (a.NotReadable[k] || a.NoWriter[k])
+              sprintf_s(read, "; %d couldn't be read%s", a.NotReadable[k], a.NoWriter[k] ? " (the client world's among "
+                "them: none looked at)" : "");
+            if (a.HasDiff[k])
+              sprintf_s(bytes, "; the first byte not as its file has it: %s / %s (the first packfile's place / the "
+                "second's)", place[0], place[1]);
+            util::log::Write("Street level: %s: %d of its zone's bodies aren't as the tools know them (left as they are)%s%s",
+              s.Name, unknown, read, bytes);
+          }
+          if (a.OtherBytes[k] && !ss.OtherBytesLogged && util::DiagnosticsOn())
+          {
+            ss.OtherBytesLogged = true;
+            char list[300] = "";   // (all 48 of them fit: 6 characters each)
+            size_t used = 0;
+            for (int at = 0x10; at < DataStart && used + 8 < sizeof(list); ++at)
+              if (a.OtherBytes[k] >> (at - 0x10) & 1)
+                used += (size_t)sprintf_s(list + used, sizeof(list) - used, " +0x%X", at);
+            util::log::Write("Street level (diagnostic): %s: the game has bytes of it the tools don't go by that aren't as "
+              "its file has them (left as they are):%s", s.Name, list);
           }
           if (a.Other[k] && !ss.OtherLogged)
           {
