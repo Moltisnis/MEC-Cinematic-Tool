@@ -1077,6 +1077,9 @@ namespace
       t.Respawned += s.Counts.Respawned;
       t.DensityHidden += s.Counts.DensityHidden; t.DensityShown += s.Counts.DensityShown;
       t.PutBackHidden += s.Counts.PutBackHidden;
+      t.CycleHidden += s.Counts.CycleHidden; t.CycleCross += s.Counts.CycleCross;
+      t.StandHidden += s.Counts.StandHidden; t.StandHiddenInSight += s.Counts.StandHiddenInSight;
+      t.CapHidden += s.Counts.CapHidden; t.CapHiddenInSight += s.Counts.CapHiddenInSight;
     }
     long long calls = g_Calls.exchange(0), ticks = g_Ticks.exchange(0), most = g_MaxTicks.exchange(0);
     double ms = calls ? 1000.0 * (double)ticks / (double)g_Freq.QuadPart : 0.0;
@@ -1095,14 +1098,18 @@ namespace
       "(%.3f ms a step on average, %.3f ms the longest)%s and the game's own car step in them %.2f ms (%.3f ms the "
       "longest); so far %lld cars appeared (%lld of them respawns, started "
       "unseen), %lld shown, %lld made unseen inside another, %lld turned round or off the road unseen, %lld car-steps "
-      "held back, %lld put back (%lld cars made unseen after %.0f s of it), %lld without a lane; road segments found in "
+      "held back, %lld put back (%lld cars made unseen after %.0f s of it), %lld made unseen to end a wait cycle (%lld "
+      "of them over two or more placements), %lld made unseen after standing %.0f s out of sight or %.0f s in sight (%lld "
+      "in sight), %lld made unseen at a placement's first step above its route's most (%lld in sight), %lld without a "
+      "lane; road segments found in "
       "the lane table %lld, not found %lld (those "
       "keep the game's own lane); steps left to the game: %lld refused, %lld with no slot free or the placement's step "
       "on another thread; "
       "%lld unseen cars shown again because the rules couldn't step them",
       placements, calls, ms, calls ? ms / (double)calls : 0.0, 1000.0 * (double)most / (double)g_Freq.QuadPart,
       g_OtherThreads.load() ? " (on more than one thread)" : "", gameCarMs, gameCarMost, t.Appeared, t.Respawned, t.Revealed, t.Waiting, t.Unseen,
-      t.Held, t.Reverted, t.PutBackHidden, PutBackSeconds, t.NoLane, t.LaneFound, t.LaneMissing, g_Refused.load(),
+      t.Held, t.Reverted, t.PutBackHidden, PutBackSeconds, t.CycleHidden, t.CycleCross,
+      t.StandHidden, StandOutSeconds, StandInSeconds, t.StandHiddenInSight, t.CapHidden, t.CapHiddenInSight, t.NoLane, t.LaneFound, t.LaneMissing, g_Refused.load(),
       g_BusySteps.load(), g_Released.load());
 
     // the walkers, the standing crowds and the time of day's share
@@ -1175,6 +1182,24 @@ namespace
       Log(false);
   }
 
+  // Once a placement (diagnostics): its route as the rules looked it up in the route table (Routes), so a log tells
+  // whether the game's car networks are the ones the table was made from
+  std::atomic<uintptr_t> g_RouteSaid[SlotCount];
+  void SayRoute(int index, Slot const& s, StepInput const& in)
+  {
+    if (!s.MostLooked || !util::DiagnosticsOn() || g_RouteSaid[index].load(std::memory_order_relaxed) == s.Key) return;
+    g_RouteSaid[index].store(s.Key, std::memory_order_relaxed);
+    if (s.RouteRow < 0)
+      util::log::Write("Road traffic: a car placement (%d nodes, centroid %.1f, %.1f; %d cars) isn't in the route table: "
+        "no route limit", in.NodeCount, s.RouteX, s.RouteZ, in.Count);
+    else if (s.Most > 0)
+      util::log::Write("Road traffic: a car placement (%d nodes, centroid %.1f, %.1f; %d cars) is route %d of the table: "
+        "at most %d of its cars show", in.NodeCount, s.RouteX, s.RouteZ, in.Count, s.RouteRow, s.Most);
+    else
+      util::log::Write("Road traffic: a car placement (%d nodes, centroid %.1f, %.1f; %d cars) is route %d of the table: "
+        "no route limit", in.NodeCount, s.RouteX, s.RouteZ, in.Count, s.RouteRow);
+  }
+
   void __fastcall hCarStep(__int64 behaviour, __int64 params)
   {
     if (!g_On)
@@ -1228,6 +1253,13 @@ namespace
     if (!g_FirstThread) g_FirstThread = thread;
     else if (thread != g_FirstThread) g_OtherThreads.store(1, std::memory_order_relaxed);
     bool ok = RulesBefore(*slot, in);
+    if (ok && slot->Most > 0)
+    {
+      int wanted = Wanted(in.Density, in.Count);   // and to its route's most (Routes)
+      if (slot->Most < wanted) wanted = slot->Most;
+      HoldRespawns(behaviour, in.Count, wanted);
+    }
+    if (ok) SayRoute(index, *slot, in);
     QueryPerformanceCounter(&t1);
     long long ticks = t1.QuadPart - t0.QuadPart;
     if (ok)

@@ -69,6 +69,16 @@ namespace road_traffic_core
   const int DensityPerStep = 2;      // cars the share hides in one step, at most
   const float PutBackSeconds = 6.f;  // a shown car whose move the final check puts back every step for this long waits
                                      // unseen (as one held beside a car that doesn't move either, SideTime)
+  // never a jam (2026-11-13; Research_Road_Traffic_2026-11-03.md section 15)
+  const float StandMove = 1.f;       // a shown car that hasn't got this far from where it stopped is standing
+  const float CycleSeconds = 3.f;    // cars standing this long, each held back by the next and the last by the first (in
+                                     // any placements, BreakCycles): one of them waits unseen
+  const int CycleHops = 64;          // cars a wait cycle is looked for along, at most
+  const float StandOutSeconds = 15.f;  // a shown car standing this long out of sight waits unseen, whatever holds it (a
+                                     // red light holds one 12 s at most) ...
+  const float StandInSeconds = 20.f;  // ... or this long in sight (StandingOut)
+  const float StandEvery = 1.f;      // seconds between two of those in one placement, at least
+  const float UnshowSeconds = 2.f;   // one made unseen by those drives on unseen this long at least
 
   // The time of day's share of a crowd shown (cars, walkers, idle people): all of it in the day, `night` of it at
   // night, eased in between (05:00 - 08:00 up, 18:00 - 23:00 down). clock: the game's time of day in seconds, 0 midnight
@@ -107,6 +117,37 @@ namespace road_traffic_core
     int w = (int)std::ceil(d * (float)count - 1e-4f);
     return w < 1 ? 1 : (w > count ? count : w);
   }
+
+  // The most cars a placement shows, by its route: the city's car networks (data: network.txt, from the game's own) by
+  // node count and node centroid (x, z), and how many cars their lanes hold flowing. A placement with more members
+  // shows that many and the rest drive on unseen, as the time of day's share's. 0: no limit. (2026-11-12, the
+  // roundabout by the station: placement 79's closed loop held its 82 cars nose to tail, 8.0 m a car, and all of them
+  // crawled; Research section 15)
+  struct Route { int Nodes; float X, Z; int Most; };
+  const Route Routes[] = {
+    { 38, -78.239f, -37.307f, 90 },   // placements 17 and 180 (one network)
+    { 18, 327.738f, 587.136f, 0 },   // placement 21
+    { 25, -99.328f, 312.746f, 65 },   // placement 79
+    { 18, -113.491f, 537.519f, 0 },   // placement 83
+    { 62, 352.409f, 262.890f, 45 },   // placement 93
+    { 28, 455.445f, 567.763f, 51 },   // placement 98
+    { 16, 83.190f, 112.797f, 0 },   // placement 102
+    { 16, -175.549f, 850.728f, 0 },   // placement 104
+    { 35, -332.336f, 114.217f, 0 },   // placement 118
+    { 33, 542.618f, -133.880f, 0 },   // placement 126
+    { 31, 306.155f, 480.462f, 0 },   // placement 136
+    { 14, 77.367f, 431.705f, 0 },   // placement 151
+    { 33, 47.313f, -69.818f, 0 },   // placement 163
+    { 28, -416.278f, -165.575f, 0 },   // placement 186
+    { 24, -33.090f, 377.366f, 55 },   // placement 188
+    { 11, 175.629f, 519.792f, 31 },   // placement 190
+    { 9, -32.636f, 552.907f, 0 },   // placement 222
+    { 43, -296.431f, 265.059f, 69 },   // placement 235
+    { 23, 351.222f, 526.679f, 0 },   // placement 244
+    { 12, 130.957f, 981.624f, 0 },   // placement 254
+  };
+  const int RouteCount = (int)(sizeof(Routes) / sizeof(Routes[0]));
+  const float RouteNear = 0.5f;      // metres a centroid may be off the table's
 
   // ---- half floats ----
   inline float HalfToFloat(uint16_t h)
@@ -270,12 +311,19 @@ namespace road_traffic_core
     float SideSpeed;          // that car's speed
     float HeadingDeg;         // its heading as the rules left it (the record's half float is 0.06 - 0.25 degrees coarse)
     uint8_t HeadingSet;       // HeadingDeg is the rules'
+    float AnchorX, AnchorZ;   // where it stopped (StandMove; 1e30 none)
+    float StandTime;          // seconds shown and standing there
+    uint32_t Blocker;         // the car that held it back this step (put back > footprint > gap; 0 none: free, or the
+                              // game's own step stopped it, as at a red light)
+    float Unshow;             // seconds it drives on unseen before it may show (made unseen by BreakCycles, StandingOut)
   };
 
   struct Published            // a car as the other placements see it
   {
     float X, Y, Z, DirX, DirZ, Speed, Wait;
     uint32_t Id;
+    uint32_t Blocker;         // its Blocker
+    float Stand;              // its StandTime
   };
 
   struct Stats
@@ -286,6 +334,10 @@ namespace road_traffic_core
     long long LaneFound = 0, LaneMissing = 0;   // segments looked up in the lane table: found, not (the game's own lane)
     long long DensityHidden = 0, DensityShown = 0;   // made unseen / shown again for the time of day's share
     long long PutBackHidden = 0;   // made unseen after their moves were put back for PutBackSeconds
+    long long CycleHidden = 0, CycleCross = 0;   // made unseen to break a wait cycle; of them, cycles over 2+ placements
+    long long StandHidden = 0, StandHiddenInSight = 0;   // made unseen after standing (StandingOut); of them in sight
+    long long CapHidden = 0, CapHiddenInSight = 0;   // made unseen at a placement's first step, above its route's most
+                                   // (Routes); of them in sight (its first step: none of its cars drawn yet, expected)
   };
 
   struct Slot
@@ -317,8 +369,23 @@ namespace road_traffic_core
     float GridX[MaxMembers + MaxForeign], GridZ[MaxMembers + MaxForeign];
     int GridCX[MaxMembers + MaxForeign], GridCZ[MaxMembers + MaxForeign];   // its cell
     int DensityNext;                // where the time of day's share looks next
+    uint32_t IdFirst;               // its cars' ids: IdFirst + member (by the slot: (slot + 1) << 10, set when it's taken)
+    int Most;                       // the most cars it shows (Routes; 0 no limit)
+    uint8_t MostLooked;             // Most looked up (Before)
+    uint8_t Fresh;                  // its first step is to come (the share hides above Most in sight too, that once)
+    float RouteX, RouteZ;           // its nodes' centroid (for the logs)
+    int RouteRow;                   // its row in Routes (-1 none; for the logs)
+    double StandNext;               // in.Now before which StandingOut leaves it
+    uint8_t CycleState[MaxMembers]; // BreakCycles: 0 not looked at, 1 on the walk, 2 done this step
+    static const int ForeignBuckets = 4096;
+    int ForeignAt[ForeignBuckets];  // the others' cars by id this step (index + 1, 0 empty), built when a walk needs it
+    uint8_t ForeignAtBuilt;
     Stats Counts;                   // only its own thread writes them (one step of a placement at a time)
   };
+
+  // A slot's first car id: its cars are IdBase + member, unique over the slots (MaxMembers is 1 << 10). (Until
+  // 2026-11-13 from the placement's address, (Key >> 4) * 1024 in 32 bits: two placements could share a range.)
+  inline uint32_t IdBase(Slot const& s) { return s.IdFirst; }
 
   // ---- the lane path of one car ----
   struct Path
@@ -375,6 +442,7 @@ namespace road_traffic_core
       }
       Slot* s = empty ? empty : oldest;
       if (!s) return nullptr;
+      s->IdFirst = ((uint32_t)(s - storage) + 1u) << 10;
       Reset(*s, in);
       return s;
     }
@@ -401,6 +469,7 @@ namespace road_traffic_core
         if (!m.Alive || !m.Hidden || (in.Flags[i] & DespawnedFlag) || !(rec[i].Pos[1] < -9000.f)) continue;
         rec[i].Pos[1] = m.LaneY > -9000.f ? m.LaneY : rec[i].Target[1];
         m.Hidden = 0;
+        m.Unshow = 0.f;
         ++shown;
       }
       return shown;
@@ -411,6 +480,11 @@ namespace road_traffic_core
     {
       if ((uintptr_t)in.Records != s.Records || in.Count != s.Count || (uintptr_t)in.Nodes != s.Nodes || in.NodeCount != s.NodeCount)
         Reset(s, in);
+      if (!s.MostLooked)
+      {
+        s.Most = RouteMost(in, s.RouteX, s.RouteZ, s.RouteRow);
+        s.MostLooked = 1;
+      }
       Record* rec = (Record*)in.Records;
       for (int i = 0; i < in.Count; ++i)
         if (s.M[i].Alive && s.M[i].Hidden && !(in.Flags[i] & DespawnedFlag) && rec[i].Pos[1] < -9000.f && s.M[i].LaneY > -9000.f)
@@ -453,6 +527,9 @@ namespace road_traffic_core
           m.BlockedTime = 0.f;
           m.SideTime = 0.f;
           m.PutBackTime = 0.f;
+          Unstand(m);
+          m.Blocker = 0;
+          m.Unshow = 0.f;
           m.Hidden = (b.Pos[1] < -9000.f || respawned) ? 1 : 0;
           m.LaneY = HiddenY;      // not known until it has driven a step
           m.HeadingSet = 0;
@@ -489,6 +566,7 @@ namespace road_traffic_core
       int shown = 0;
       for (int i = 0; i < in.Count; ++i) shown += s.Visible[i];
       int wanted = Wanted(in.Density, in.Count);
+      if (s.Most > 0 && s.Most < wanted) wanted = s.Most;   // the route's most (Routes)
 
       // each car: its lane, how far it may go, where it ends up
       for (int i = 0; i < in.Count; ++i)
@@ -499,6 +577,7 @@ namespace road_traffic_core
         Record const& b = s.Before[i];
         ++s.Counts.Cars;
         ++m.Age;
+        m.Blocker = 0;
         if (r.From >= in.NodeCount || r.To >= in.NodeCount) { Keep(s, in, i, r, b); ++s.Counts.NoLane; continue; }
         if (b.From != r.From || b.To != r.To)
           m.PrevNode = (r.From == b.To && b.From < in.NodeCount) ? b.From : (uint16_t)0xFFFF;
@@ -540,6 +619,13 @@ namespace road_traffic_core
           // stood 74% of the time, placement 102 at its off-road segment 80%.)
           if (m.Hidden == 0) ++s.Counts.Unseen;
           m.Hidden = 1;
+          Move(s, in, i, r, b, path, advGame, cruise, true);
+          continue;
+        }
+        // made unseen by BreakCycles or StandingOut: drives on unseen a while before it may show (away from where it stood)
+        if (m.Hidden && m.Unshow > 0.f)
+        {
+          m.Unshow -= in.Dt;
           Move(s, in, i, r, b, path, advGame, cruise, true);
           continue;
         }
@@ -608,6 +694,8 @@ namespace road_traffic_core
           sideHeld = otherSpeed < 0.5f;
           m.SideBy = otherId; m.SideSpeed = otherSpeed;
         }
+        if (m.SideBy) m.Blocker = m.SideBy;
+        else if (allowed < advGame - 1e-4f) m.Blocker = m.HeldBy;
         if (allowed < advGame - 1e-4f) ++s.Counts.Held;
         if (allowed < 0.25f * advGame && advGame > 1e-4f) m.Wait += in.Dt;
         else m.Wait = 0.f;
@@ -629,7 +717,7 @@ namespace road_traffic_core
       // in sight waiting for the view to look away, 8 - 15 s, against the pops. Offline it jammed: placement 93 stood
       // 45 - 56% of the time with a view on it, 16% without.)
       {
-        uint32_t idBase = (uint32_t)(s.Key >> 4) * 1024u;
+        uint32_t idBase = IdBase(s);
         for (int i = 0; i < in.Count; ++i)
         {
           if (!s.Visible[i] || s.M[i].Wait < 3.f) continue;
@@ -669,7 +757,8 @@ namespace road_traffic_core
       {
         if (!s.Visible[i]) { s.M[i].PutBackTime = 0.f; continue; }
         int other;
-        if (!Inside(s, in, i, s.NewX[i], s.NewY[i], s.NewZ[i], s.NewDX[i], s.NewDZ[i], 0.f, other)) { s.M[i].PutBackTime = 0.f; continue; }
+        uint32_t backId = 0;
+        if (!Inside(s, in, i, s.NewX[i], s.NewY[i], s.NewZ[i], s.NewDX[i], s.NewDZ[i], 0.f, other, nullptr, &backId)) { s.M[i].PutBackTime = 0.f; continue; }
         Record const& b = s.Before[i];
         if (std::fabs(s.NewX[i] - b.Pos[0]) > 1e-4f || std::fabs(s.NewZ[i] - b.Pos[2]) > 1e-4f)
         {
@@ -682,6 +771,7 @@ namespace road_traffic_core
           s.NewDX[i] = s.WayX[i]; s.NewDZ[i] = s.WayZ[i];
           s.M[i].Speed = 0.f;
           ++s.Counts.Reverted;
+          s.M[i].Blocker = backId;
           s.M[i].PutBackTime += in.Dt;
           if (!Inside(s, in, i, s.NewX[i], s.NewY[i], s.NewZ[i], s.NewDX[i], s.NewDZ[i], 0.f, other))
           {
@@ -699,10 +789,54 @@ namespace road_traffic_core
         s.M[hide].PutBackTime = 0.f;
         ++s.Counts.Waiting;
       }
-      // above the time of day's share: shown cars out of sight go unseen (a few a step, from where the last step
-      // stopped) and drive on unseen; one with no lane height known (no lane) stays
+      // never a jam: how long each shown car has stood (within StandMove of where it stopped), then wait cycles over
+      // any placements, then a car standing too long whatever holds it
+      for (int i = 0; i < in.Count; ++i)
+      {
+        Member& m = s.M[i];
+        if (!s.Visible[i]) { Unstand(m); continue; }
+        float dx = rec[i].Pos[0] - m.AnchorX, dz = rec[i].Pos[2] - m.AnchorZ;
+        if (!(dx * dx + dz * dz <= StandMove * StandMove)) { m.AnchorX = rec[i].Pos[0]; m.AnchorZ = rec[i].Pos[2]; m.StandTime = 0.f; }
+        else m.StandTime += in.Dt;
+      }
+      BreakCycles(s, in, rec);
+      StandingOut(s, in, rec);
+
       shown = 0;
       for (int i = 0; i < in.Count; ++i) shown += s.Visible[i];
+      // its first step: above its route's most, cars go unseen in sight too, spread evenly over its members (the
+      // game's first spread puts them along its lanes in member order), rather than one by one out of sight
+      if (s.Fresh)
+      {
+        s.Fresh = 0;
+        if (s.Most > 0 && shown > s.Most)
+        {
+          int eligible = 0;
+          for (int i = 0; i < in.Count; ++i)
+            if (s.Visible[i] && s.M[i].Age >= 1 && s.M[i].LaneY > -9000.f) ++eligible;
+          int excess = shown - s.Most;
+          if (excess > eligible) excess = eligible;
+          if (excess > shown - 1) excess = shown - 1;
+          int seen = 0, done = 0;
+          for (int i = 0; i < in.Count && done < excess; ++i)
+          {
+            Member& m = s.M[i];
+            if (!s.Visible[i] || m.Age < 1 || !(m.LaneY > -9000.f)) continue;
+            ++seen;
+            if ((long long)seen * excess / eligible <= (long long)done) continue;
+            m.Hidden = 2;
+            s.Visible[i] = 0;
+            rec[i].Pos[1] = HiddenY;
+            Unstand(m);
+            --shown;
+            ++done;
+            ++s.Counts.CapHidden;
+            if (!Unseen(in, s.NewX[i], s.NewY[i], s.NewZ[i])) ++s.Counts.CapHiddenInSight;
+          }
+        }
+      }
+      // above the time of day's share: shown cars out of sight go unseen (a few a step, from where the last step
+      // stopped) and drive on unseen; one with no lane height known (no lane) stays
       if (shown > wanted && (in.ViewKnown || in.InSightToo) && in.Count > 0)
       {
         int done = 0;
@@ -716,6 +850,7 @@ namespace road_traffic_core
           m.Hidden = 2;
           s.Visible[i] = 0;
           rec[i].Pos[1] = HiddenY;
+          Unstand(m);
           --shown;
           ++done;
           ++s.Counts.DensityHidden;
@@ -744,11 +879,212 @@ namespace road_traffic_core
       s.PubCount = 0;
       s.LastTime = in.Now;
       s.DensityNext = 0;
-      for (int i = 0; i < MaxMembers; ++i) { memset(&s.M[i], 0, sizeof(Member)); s.M[i].PrevNode = 0xFFFF; }
+      s.Most = 0;
+      s.MostLooked = 0;
+      s.Fresh = 1;
+      s.RouteX = s.RouteZ = 0.f;
+      s.RouteRow = -1;
+      s.StandNext = 0.0;
+      for (int i = 0; i < MaxMembers; ++i)
+      {
+        memset(&s.M[i], 0, sizeof(Member));
+        s.M[i].PrevNode = 0xFFFF;
+        Unstand(s.M[i]);
+      }
       for (int i = 0; i < Slot::CacheSize; ++i) s.CacheKey[i] = 0xFFFFFFFFu;
     }
 
     float const* NodePos(StepInput const& in, int n) const { return (float const*)(in.Nodes + (size_t)n * NodeSize); }
+
+    static void Unstand(Member& m) { m.StandTime = 0.f; m.AnchorX = m.AnchorZ = 1e30f; }
+
+    // The route table's most for this placement's nodes (0 none); x, z its nodes' centroid, row its row (-1 none)
+    static int RouteMost(StepInput const& in, float& x, float& z, int& row)
+    {
+      x = z = 0.f;
+      row = -1;
+      if (in.NodeCount <= 0) return 0;
+      double sx = 0.0, sz = 0.0;
+      for (int n = 0; n < in.NodeCount; ++n)
+      {
+        float const* p = (float const*)(in.Nodes + (size_t)n * NodeSize);
+        sx += p[0];
+        sz += p[2];
+      }
+      x = (float)(sx / in.NodeCount);
+      z = (float)(sz / in.NodeCount);
+      for (int k = 0; k < RouteCount; ++k)
+        if (Routes[k].Nodes == in.NodeCount && std::fabs(Routes[k].X - x) < RouteNear && std::fabs(Routes[k].Z - z) < RouteNear)
+        {
+          row = k;
+          return Routes[k].Most;
+        }
+      return 0;
+    }
+
+    // a car made unseen to end a jam: it drives on unseen UnshowSeconds at least
+    void HideStuck(Slot& s, Record* rec, int i)
+    {
+      Member& m = s.M[i];
+      m.Hidden = 1;
+      m.Wait = 0.f;
+      m.BlockedTime = 0.f;
+      m.SideTime = 0.f;
+      m.PutBackTime = 0.f;
+      m.Unshow = UnshowSeconds;
+      m.Speed = 0.f;
+      s.Visible[i] = 0;
+      rec[i].Pos[1] = HiddenY;
+      rec[i].Speed = 0;
+      Unstand(m);
+    }
+
+    bool CycleCar(Slot const& s, int i) const
+    {
+      return s.Visible[i] && s.M[i].Blocker != 0 && s.M[i].StandTime >= CycleSeconds;
+    }
+
+    // Another placement's car by id this step: its index in Foreign, -1 none
+    int ForeignIndex(Slot& s, uint32_t id)
+    {
+      const unsigned mask = (unsigned)Slot::ForeignBuckets - 1u;
+      if (!s.ForeignAtBuilt)
+      {
+        memset(s.ForeignAt, 0, sizeof(s.ForeignAt));
+        for (int f = 0; f < s.ForeignCount; ++f)
+        {
+          unsigned h = (s.Foreign[f].Id * 2654435761u) >> 20;
+          while (s.ForeignAt[h]) h = (h + 1u) & mask;
+          s.ForeignAt[h] = f + 1;
+        }
+        s.ForeignAtBuilt = 1;
+      }
+      unsigned h = (id * 2654435761u) >> 20;
+      for (int probe = 0; probe < Slot::ForeignBuckets && s.ForeignAt[h]; ++probe, h = (h + 1u) & mask)
+        if (s.Foreign[s.ForeignAt[h] - 1].Id == id) return s.ForeignAt[h] - 1;
+      return -1;
+    }
+
+    // Wait cycles: shown cars standing CycleSeconds, each held back by the next (Blocker) and the last by the first,
+    // over any placements (the others' latest published cars near this one). Such cars can't sort it out (the loop
+    // rule above sees only its own placement's, 8 at most, by HeldBy / SideBy). One of them waits unseen: the
+    // placement with the lowest slot among the cycle's cars does it (each placement in it sees the same cycle), with
+    // its own car out of sight first, else the youngest. A car the game's step stopped (a red light) has no Blocker:
+    // a queue at a light ends there and is never a cycle.
+    void BreakCycles(Slot& s, StepInput const& in, Record* rec)
+    {
+      bool any = false;
+      for (int i = 0; i < in.Count && !any; ++i) any = CycleCar(s, i);
+      if (!any) return;
+      memset(s.CycleState, 0, (size_t)in.Count);
+      s.ForeignAtBuilt = 0;
+      const uint32_t own = IdBase(s) >> 10;
+      int shown = 0;
+      for (int i = 0; i < in.Count; ++i) shown += s.Visible[i];
+      int walk[CycleHops];   // own member, or MaxMembers + the other's index in Foreign
+      for (int start = 0; start < in.Count; ++start)
+      {
+        if (s.CycleState[start] != 0 || !CycleCar(s, start)) continue;
+        int n = 0, at = -1, cur = start;
+        bool cut = false;
+        for (;;)
+        {
+          if (cur < MaxMembers)
+          {
+            if (s.CycleState[cur] == 2) break;   // looked at from another car this step
+            if (s.CycleState[cur] == 1) { for (int q = 0; q < n; ++q) if (walk[q] == cur) at = q; break; }
+            if (!CycleCar(s, cur)) break;
+            s.CycleState[cur] = 1;
+          }
+          else
+          {
+            bool again = false;
+            for (int q = 0; q < n; ++q) if (walk[q] == cur) { at = q; again = true; }
+            if (again) break;
+            Published const& p = s.Foreign[cur - MaxMembers];
+            if (!(p.Stand >= CycleSeconds) || p.Blocker == 0) break;
+          }
+          if (n >= CycleHops) { cut = true; break; }   // (after the close was looked at: a cycle of CycleHops is found)
+          walk[n++] = cur;
+          uint32_t by = cur < MaxMembers ? s.M[cur].Blocker : s.Foreign[cur - MaxMembers].Blocker;
+          if ((by >> 10) == own)
+          {
+            uint32_t i = by - IdBase(s);
+            if (i >= (uint32_t)in.Count) break;
+            cur = (int)i;
+          }
+          else
+          {
+            int f = ForeignIndex(s, by);
+            if (f < 0) break;
+            cur = MaxMembers + f;
+          }
+        }
+        if (cut)
+        {
+          // too long to follow to its end from here: its cars are left to later walks (one of them may start nearer a
+          // cycle it leads to), only this start is done. (Marked done, a cycle behind a tail of 54+ cars was never
+          // found: the 2026-11-13 review's made-up test.)
+          for (int q = 0; q < n; ++q) if (walk[q] < MaxMembers) s.CycleState[walk[q]] = 0;
+          if (cur < MaxMembers) s.CycleState[cur] = 0;
+          s.CycleState[start] = 2;
+          continue;
+        }
+        for (int q = 0; q < n; ++q) if (walk[q] < MaxMembers) s.CycleState[walk[q]] = 2;
+        if (at < 0) continue;
+        // the cycle is walk[at .. n - 1]
+        uint32_t lowest = own;
+        bool cross = false;
+        for (int q = at; q < n; ++q)
+          if (walk[q] >= MaxMembers)
+          {
+            cross = true;
+            uint32_t o = s.Foreign[walk[q] - MaxMembers].Id >> 10;
+            if (o < lowest) lowest = o;
+          }
+        if (lowest != own) continue;   // another placement in it does it
+        int victim = -1;
+        bool victimFar = false;
+        for (int q = at; q < n; ++q)
+        {
+          int i = walk[q];
+          if (i >= MaxMembers || !(s.M[i].LaneY > -9000.f)) continue;
+          bool far = Unseen(in, s.NewX[i], s.NewY[i], s.NewZ[i]);
+          if (victim < 0 || (far && !victimFar) || (far == victimFar && s.M[i].Age < s.M[victim].Age)) { victim = i; victimFar = far; }
+        }
+        if (victim < 0 || shown <= 1) continue;   // never its last shown car (StandingOut's time comes for the others')
+        HideStuck(s, rec, victim);
+        --shown;
+        ++s.Counts.CycleHidden;
+        if (cross) ++s.Counts.CycleCross;
+      }
+    }
+
+    // A shown car standing StandOutSeconds out of sight, or StandInSeconds in sight (or with no view known), waits
+    // unseen whatever holds it (a jam the rules above don't see through): the longest standing one, one a StandEvery
+    // in a placement at most, never its last shown car. A red light holds a car 12 s at most (the longest red: two
+    // inputs at 10 s green + 1 s orange each), and a queue at a light moves up each green.
+    void StandingOut(Slot& s, StepInput const& in, Record* rec)
+    {
+      if (in.Now < s.StandNext) return;
+      int longest = -1, shown = 0;
+      bool longestSeen = false;
+      for (int i = 0; i < in.Count; ++i)
+      {
+        if (!s.Visible[i]) continue;
+        ++shown;
+        Member const& m = s.M[i];
+        if (m.Age < 2 || !(m.LaneY > -9000.f) || !(m.StandTime >= StandOutSeconds)) continue;
+        bool seen = !Unseen(in, s.NewX[i], s.NewY[i], s.NewZ[i]);
+        if (seen && !(m.StandTime >= StandInSeconds)) continue;
+        if (longest < 0 || m.StandTime > s.M[longest].StandTime) { longest = i; longestSeen = seen; }
+      }
+      if (longest < 0 || shown <= 1) return;
+      HideStuck(s, rec, longest);
+      s.StandNext = in.Now + StandEvery;
+      ++s.Counts.StandHidden;
+      if (longestSeen) ++s.Counts.StandHiddenInSight;
+    }
 
     // Out of sight of the view (unknown: never)
     static bool Unseen(StepInput const& in, float x, float y, float z)
@@ -1079,7 +1415,7 @@ namespace road_traffic_core
           if (!hit && (b.Pos[0] != s.NewX[e] || b.Pos[2] != s.NewZ[e]))
             hit = std::fabs(b.Pos[0] - x) <= 6.f && std::fabs(b.Pos[2] - z) <= 6.f && std::fabs(b.Pos[1] - y) <= Height &&
               Overlap(x, z, dx, dz, b.Pos[0], b.Pos[2], s.WayX[e], s.WayZ[e], inflate);
-          if (hit) { found = e; speed = s.M[e].Speed; id = (uint32_t)(s.Key >> 4) * 1024u + (uint32_t)e; return true; }
+          if (hit) { found = e; speed = s.M[e].Speed; id = IdBase(s) + (uint32_t)e; return true; }
           return false;
         }
         Published const& p = s.Foreign[e - MaxMembers];
@@ -1135,7 +1471,7 @@ namespace road_traffic_core
       float best = advGame;
       m.HeldBy = 0; m.HeldGap = 0.f; m.HeldMutual = 0;
       bool mutualHold = false;
-      uint32_t myId = (uint32_t)(s.Key >> 4) * 1024u + (uint32_t)i;
+      uint32_t myId = IdBase(s) + (uint32_t)i;
       auto consider = [&](float bx, float by, float bz, float bdx, float bdz, float bspeed, float bwait, uint32_t id) {
         if (std::fabs(by - y) > Height) return;
         float rx = bx - x, rz = bz - z;
@@ -1196,7 +1532,7 @@ namespace road_traffic_core
           if (e == i || e >= in.Count || !s.Visible[e]) return false;
           Record const& o = s.Before[e];
           consider(o.Pos[0], o.Pos[1], o.Pos[2], s.WayX[e], s.WayZ[e], s.M[e].Speed, s.M[e].Wait,
-            (uint32_t)(s.Key >> 4) * 1024u + (uint32_t)e);
+            IdBase(s) + (uint32_t)e);
           return false;
         }
         Published const& p = s.Foreign[e - MaxMembers];
@@ -1272,7 +1608,9 @@ namespace road_traffic_core
         p.DirX = s.NewDX[i]; p.DirZ = s.NewDZ[i];
         p.Speed = s.M[i].Speed;
         p.Wait = s.M[i].Wait;
-        p.Id = (uint32_t)(s.Key >> 4) * 1024u + (uint32_t)i;
+        p.Id = IdBase(s) + (uint32_t)i;
+        p.Blocker = s.M[i].Blocker;
+        p.Stand = s.M[i].StandTime;
         minX = p.X < minX ? p.X : minX; maxX = p.X > maxX ? p.X : maxX;
         minY = p.Y < minY ? p.Y : minY; maxY = p.Y > maxY ? p.Y : maxY;
         minZ = p.Z < minZ ? p.Z : minZ; maxZ = p.Z > maxZ ? p.Z : maxZ;

@@ -1,5 +1,58 @@
 # Changelog
 
+## Version 2.0.2
+
+Road traffic only: 2.0.1 with the change below and nothing else.
+
+- **Road traffic: no more traffic jams, and the roundabout by the station flows** (the user, 2026-11-12, with a
+  screenshot of the roundabout packed with cars: "the traffic still looks pretty bad find improvements and fix it no
+  mistakes high priority", then "make sure that they are never traffic jams"). Release build FE9B5E7EB26D (2.0.1's
+  sources plus this alone). The same traffic code is in the developer's build 08A51E9A3C59 (with other work not in
+  this release), installed 13:42. **Not tested in game.**
+  - **What it was** (the offline car test, with the game's own car step):
+    - The roundabout's ring belongs to one car placement (79): a closed 658 m loop with no spawn or despawn, holding
+      its 82 cars, 8 m of road a car. It never locked, but it always crawled nose to tail at 72 - 78% of its speed.
+      Four more routes were as full (190, 98, and 17 with 180, which share their roads; 244 less so).
+    - Queues that didn't clear in one green: 188's split and merge just north of the ring, 235's light, 93's ten
+      lights and its tight corner, 98's merge.
+    - Cars waiting on each other in a circle across two placements, or more than 8 cars, were never sorted out: a
+      made-up ring packed with 36 cars and two lights stood for good, 126's hairpin held cars up to 149 s, and at
+      3,000 cars the whole city gridlocked.
+  - **The fix** (Camera/RoadTrafficCore.h, Camera/RoadTraffic.cpp):
+    - **Each route's most cars:** a table of the city's 20 car networks (matched by their nodes, from the game's
+      data) with how many cars each holds flowing. 79 (the ring) shows 65 of its 82, 17 90 of 103, 98 51 of 82, 190 31
+      of 41, 188 55 of 82, 235 69 of 92, 93 45 of 65; the rest as before. The others drive on unseen as at night, and
+      the game respawns only up to it. A placement's extra cars go at its very first step (before the game has drawn
+      it, by the game's step and cull order [inferred]); afterwards only out of sight, as the time of day's share.
+    - **Cars waiting on each other in a circle** for 3 s, in any placements, up to 64 cars: one of them (out of sight
+      first) drives on unseen. A queue at a red light is never one.
+    - **A last stop:** a car that has stood still 15 s out of sight, or 20 s in sight, drives on unseen, whatever
+      holds it (the longest red light is about 12 s). One a second per placement, never a placement's last car.
+    - Car ids are now unique per placement (by its slot, not its address).
+  - **Offline, 11 runs of 30 minutes** (3 seeds, Faith's view, a view of the roundabout, low step rates, 8 of 21
+    placements stepped as the game culls, 3,000 cars, night), installed -> new:
+    - no car stood 20 s or more in any run (before: up to 149 s at 2,000 cars, 1,754 s at 3,000);
+    - the longest queue (p99) 33 - 78 -> 20 - 25 cars; cars stopped 2.2 - 2.9% -> 1.2 - 1.7% of the time;
+    - the ring: 72 - 78% -> 88 - 92% of its speed, stopped 2 - 5% -> 0 - 1%; 98 61 - 70% -> 89 - 92%, 93 68 - 79% ->
+      83 - 93%, 188 69 - 84% -> 84 - 86%, 190 74 - 89% -> 87 - 93%;
+    - cars disappearing in view: 4 - 12% fewer (on screen at the roundabout 37 -> 11 in 15 minutes); never two cars
+      inside each other; turning unchanged; the rules cost the same (2.25 against 2.31 ms a frame offline, three runs each, one at a time);
+    - the price: 139 fewer cars shown by day (1,907 -> 1,768 of 2,000), 11 at night.
+    - With the new rules switched off, every car's record came out the same as the installed rules' (3 runs); with
+      them on, nothing changed before they first acted.
+  - Checked by four independent reviewers (the code, remaining jams, side effects, the limits). Their findings are
+    in: a circle behind a queue of 54+ cars or of exactly 64 was missed (fixed), the first limits left the ring
+    empty once a lap and took cars where nothing jammed (retuned).
+  - **Left:** 93's tight corner, where its two one-way roads meet 2.3 m apart (pairs hold each other a few seconds,
+    sorted out by the circle rule), and placement 102 by the ring at about 70% of its speed (not standing).
+  - **CT.log** (diagnostics on): one line per car placement, e.g. "Road traffic: a car placement (25 nodes, centroid
+    -99.3, 312.7; 82 cars) is route 2 of the table: at most 65 of its cars show" (or "no route limit" / "isn't in
+    the route table", which would mean the game's networks differ from the table's). The minute line adds the cars
+    made unseen to end a circle, after standing (and how many in sight), and at a first step (and how many in the
+    rules' wide sight test; a placement turned to face is first stepped near the view, still before its first
+    drawing [inferred]).
+  - Research_Road_Traffic_2026-11-03.md section 15.
+
 ## Version 2.0.1
 
 Fixes for the first outside tester's report on 2.0.0 (2026-11-10, their CT.log: "zone loading doesn't load the whole
