@@ -8,7 +8,7 @@ Road traffic only: 2.0.1 with the change below and nothing else.
   screenshot of the roundabout packed with cars: "the traffic still looks pretty bad find improvements and fix it no
   mistakes high priority", then "make sure that they are never traffic jams"). Release build FE9B5E7EB26D (2.0.1's
   sources plus this alone). The same traffic code is in the developer's build 08A51E9A3C59 (with other work not in
-  this release), installed 13:42. **Not tested in game.**
+  this release), installed 13:42.
   - **What it was** (the offline car test, with the game's own car step):
     - The roundabout's ring belongs to one car placement (79): a closed 658 m loop with no spawn or despawn, holding
       its 82 cars, 8 m of road a car. It never locked, but it always crawled nose to tail at 72 - 78% of its speed.
@@ -51,6 +51,13 @@ Road traffic only: 2.0.1 with the change below and nothing else.
     made unseen to end a circle, after standing (and how many in sight), and at a first step (and how many in the
     rules' wide sight test; a placement turned to face is first stepped near the view, still before its first
     drawing [inferred]).
+  - **Works in game** (2026-11-13 13:42 - 13:50, with the developer's build 08A51E9A3C59, which has the same traffic
+    code; the user: "I tested it and it works fine"). From CT.log:
+    - All 21 car placements matched a row of the route table ("is route N of the table", none "isn't in the route
+      table"), the eight limited ones at their limits (79: 65, 17 and 180: 90, 98: 51, 190: 31, 188: 55, 235: 69,
+      93: 45).
+    - In 8 minutes: 12 cars made unseen to end a wait cycle (none over two placements), none after standing, 117 at
+      a placement's first step (56 of them inside the rules' wide sight test), none after 6 s of put-backs.
   - Research_Road_Traffic_2026-11-03.md section 15.
 
 ## Version 2.0.1
